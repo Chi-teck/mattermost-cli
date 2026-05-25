@@ -20,6 +20,10 @@ internal/
   format/                     # EnrichedPost, ChannelRow shapes shared by commands
   resolve/                    # user/channel lookup with per-session cache
   timeparse/                  # --since argument parser (relative, named, absolute)
+  store/                      # local SQLite cache: schema, views, migrations, write helpers
+  syncd/                      # sync daemon: backfill, WebSocket ingest, reconcile, lifecycle
+  ipc/                        # Unix-socket control channel (read-your-writes ingest, healthz)
+  wsutil/                     # shared WebSocket connect + event-decode helpers
 scripts/smoke.sh              # end-to-end smoke against a live server
 .goreleaser.yaml              # cross-platform builds + brew formula
 .github/workflows/            # CI (go-ci.yml) and release (release.yml)
@@ -38,6 +42,16 @@ scripts/smoke.sh              # end-to-end smoke against a live server
 - **Retry with backoff** on 429, 5xx, and network errors via
   `internal/client.Retry`. `Login` is wrapped too so cold TLS handshakes
   don't fail single-shot commands.
+- **Local-first (optional).** `mm sync start` spawns a detached daemon
+  (`__sync-run`) that is the single writer of a local SQLite cache under
+  `os.UserCacheDir()/mm` (pure-Go `modernc.org/sqlite`, WAL, FTS5 — keeps
+  `CGO_ENABLED=0`). It backfills via REST, applies realtime WebSocket events,
+  and reconciles authoritative read state every 60s; an `flock` guarantees one
+  writer. `mm query` runs read-only SQL against the cache; `find-channel` and
+  other reads prefer it when a fresh daemon is running (`sync_state` heartbeat)
+  and fall back to the live API otherwise (`MM_NO_DAEMON=1` forces live).
+  Writes go live and are handed to the daemon over a Unix socket
+  (`internal/ipc`) for read-your-writes.
 
 ## Adding a command
 

@@ -51,6 +51,30 @@ mm search "deployment"         # search across all your teams
 mm watch                       # follow the WebSocket event stream
 ```
 
+## Local-first: sync daemon + `mm query`
+
+Run a background daemon that mirrors Mattermost into a local SQLite cache and
+keeps it live over the WebSocket, then query it with read-only SQL — instant,
+with no per-command API round-trip or cold start.
+
+```bash
+mm sync start                  # backfill + realtime sync in the background
+mm sync status                 # running / ipc_reachable / ws_connected / backfill_done
+mm sync stop
+
+mm query --schema              # tables + views (v_post, v_channel, v_unread, v_thread)
+mm query "SELECT name, unread_count FROM v_unread ORDER BY unread_count DESC"
+mm query "SELECT author, message, created_at FROM v_post
+          WHERE channel_id='<id>' ORDER BY create_at DESC LIMIT 30"
+```
+
+`mm query` is read-only (SELECT / WITH / EXPLAIN). The cache lives under
+`os.UserCacheDir()` (`~/Library/Caches/mm` on macOS, `~/.cache/mm` on Linux);
+override with `MM_CACHE_PATH`. When the daemon is running and fresh, reads such
+as `find-channel` use the cache automatically and fall back to the live API
+otherwise (`MM_NO_DAEMON=1` forces live). Writes go through the normal commands
+and are reflected in the cache immediately (read-your-writes).
+
 ## Write
 
 ```bash

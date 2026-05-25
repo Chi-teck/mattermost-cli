@@ -73,6 +73,57 @@ Response sections:
 Every channel entry carries a `ref` field you pass straight into `mm
 messages`. Never reconstruct refs by hand — use what `mm` gives you.
 
+## Fast local reads: sync daemon + `mm query`
+
+For heavy reading, run the **sync daemon** once. It mirrors your Mattermost
+(channels, members, posts, reactions, read state) into a local SQLite cache and
+keeps it live over the WebSocket. Then query that cache with SQL: instant, no
+per-command network round-trip, no cold start.
+
+```bash
+mm sync start     # backfills, then realtime-syncs in the background
+mm sync status    # {running, ipc_reachable, ws_connected, backfill_done, ...}
+mm sync stop
+mm sync logs
+```
+
+Once `backfill_done` is true, query the cache (read-only SQL → JSON rows, like
+Notion's query-database):
+
+```bash
+mm query --schema                                  # discover tables + views
+mm query "SELECT name, display_name, unread_count, mention_count
+          FROM v_unread ORDER BY unread_count DESC LIMIT 20"
+mm query "SELECT author, message, created_at FROM v_post
+          WHERE channel_id='<id>' AND delete_at=0
+          ORDER BY create_at DESC LIMIT 30"
+mm query "SELECT display_name, type, team FROM v_channel
+          WHERE lower(name) LIKE '%deploy%'"        # one query, not a loop
+mm query "SELECT * FROM sync_state"                 # freshness / liveness
+```
+
+Enriched views mirror the post/channel JSON shapes:
+- `v_post` — id, thread_id, is_reply, author, message, created_at, channel,
+  team, file_count, reply_count, is_bot, bot_name, reactions (JSON), files (JSON).
+- `v_channel` — channels + team + resolved display_name.
+- `v_unread` — unread_count, mention_count per channel.
+- `v_thread` — posts grouped by thread.
+- Full-text search via FTS5:
+  `SELECT p.* FROM posts p JOIN posts_fts f ON p.rowid=f.rowid WHERE posts_fts MATCH 'deploy'`.
+
+`mm query` is **read-only** (SELECT / WITH / EXPLAIN only). Writes still go
+through the normal commands (`mm post`/`reply`/`dm`/`edit`), which hand the
+result to the daemon so a follow-up `mm query` sees it immediately
+(read-your-writes). When the daemon is running and fresh, `find-channel` and
+other reads use the cache automatically; otherwise they fall back to the live
+API. `MM_NO_DAEMON=1` forces the live path.
+
+**Don't loop or over-fetch.** One `mm query` SELECT replaces the classic
+anti-patterns that make sessions slow:
+- looping `find-channel` over guessed names → `... WHERE lower(name) LIKE '%x%'`
+- escalating `--since` (6h → 1d → 30d → all) → `WHERE create_at > <epoch_ms>`
+- piping output to `grep`/`python` to filter or aggregate → do it in SQL
+
 ## Reading
 
 ```bash
@@ -167,6 +218,9 @@ Always check the exit code before assuming a write succeeded.
 
 - **Read before you write.** Run `mm overview` or `mm messages <ref>` first so
   you have correct `ref`/`id`/`thread_id` values.
+- **Prefer `mm query` for discovery and bulk reads** when a sync daemon is
+  running (check `mm sync status`). One SQL SELECT beats looping `find-channel`
+  over guessed names or re-fetching with an ever-wider `--since`.
 - **Reply, don't post a new thread**, when continuing an existing conversation.
   Use the `thread_id` from a previous post with `mm reply`.
 - **Confirm destructive ops with the user.** `mm delete` requires `--yes`;
