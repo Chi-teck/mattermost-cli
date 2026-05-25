@@ -1,71 +1,70 @@
 # Setup Guide
 
-Getting `mm` working from scratch. This covers installation, authentication, and verifying everything works.
+Getting `mm` working from scratch. Install, authenticate, verify.
 
-## 1. Install the CLI
+## 1. Install
 
-The CLI is published on PyPI. You don't need to clone anything - `uvx` runs it directly:
-
-```bash
-uvx --from mattermost-cli mm --help
-```
-
-This downloads and runs `mm` in an isolated environment. If you see the help text, installation works.
-
-To make `mm` available as a persistent command (instead of going through `uvx` each time), install it into a Python environment:
+`mm` is a single static Go binary. **Homebrew is canonical:**
 
 ```bash
-pip install mattermost-cli
+brew install ayusavin/tap/mm
 ```
 
-Or with pipx for isolated global install:
+This also installs bash/zsh/fish completions automatically.
+
+### Alternatives
 
 ```bash
-pipx install mattermost-cli
+# Go toolchain (if you already have Go ≥ 1.22)
+go install github.com/ayusavin/mattermost-cli/cmd/mm@latest
+
+# Prebuilt binary (darwin/linux × amd64/arm64)
+# https://github.com/ayusavin/mattermost-cli/releases
+# Download the right tarball, extract `mm`, put it on $PATH.
 ```
+
+> The old PyPI package `mattermost-cli` (`pip install mattermost-cli`) is
+> dead — the project was rewritten in Go. Don't install it.
 
 ## 2. Find your Mattermost server URL
 
-You need the base URL of your Mattermost instance. This is what you type in your browser to access chat. For example:
-
-- `https://chat.example.com`
-- `https://mattermost.yourcompany.com`
-
-If you're not sure, ask your team or check your browser's address bar when you're logged into Mattermost.
+The base URL you type in your browser to access chat — e.g.
+`https://chat.example.com`. If unsure, check the address bar while logged
+into Mattermost, or ask your team.
 
 ## 3. Authenticate
 
-Two options. Personal Access Token is simpler if your server allows it.
+Two paths. Personal Access Token is strongly preferred for agent use.
 
 ### Option A: Personal Access Token (recommended)
 
-1. Log into Mattermost in your browser
-2. Go to **Profile > Security > Personal Access Tokens**
-   - If you don't see this option, your admin may have disabled it - use Option B instead
-3. Click **Create Token**, give it a name (e.g. "mm-cli"), and copy the token
+1. Log into Mattermost in your browser.
+2. **Profile > Security > Personal Access Tokens**
+   - If you don't see this option, your admin disabled PATs — use Option B.
+3. Click **Create Token**, name it (e.g. `mm-cli`), copy the value.
 4. Run:
 
 ```bash
-mm login --url https://chat.example.com --token YOUR_TOKEN
+mm login --url https://chat.example.com --token YOUR_PAT
 ```
 
-The token never expires unless revoked, so you only do this once.
+For automation, read the token from stdin to keep it out of shell history:
+
+```bash
+echo "$PAT" | mm login --url https://chat.example.com --read-token
+```
+
+The token does not expire unless revoked.
 
 ### Option B: Password + MFA
 
-If your server doesn't allow personal access tokens, or you prefer not to create one:
-
 ```bash
-mm login --url https://chat.example.com
+mm login --url https://chat.example.com --login you@example.com --mfa 123456
 ```
 
-This prompts for username, password, and MFA code (if enabled). It creates a session token that's stored locally. Session tokens can expire, so you may need to re-login occasionally.
-
-### Non-interactive login (for scripts/CI)
-
-```bash
-mm login --url https://chat.example.com --user you@example.com --password 'yourpass'
-```
+Omit `--mfa` if your account has no MFA. The resulting session token is
+stored locally; sessions can expire, so periodic re-login may be needed.
+For agent workflows always prefer Option A.
 
 ## 4. Verify
 
@@ -73,49 +72,66 @@ mm login --url https://chat.example.com --user you@example.com --password 'yourp
 mm whoami
 ```
 
-You should see your username, user ID, and the teams you belong to. If you get an auth error, re-run `mm login`.
+Expect username, user ID, and the teams you belong to. On `auth expired`
+re-run `mm login`. Exit code 2 means "auth expired or invalid".
 
-## 5. Try it
+## 5. Smoke check
 
 ```bash
-# What needs attention?
-mm overview
-
-# Read a channel
+mm overview        # what's pending
 mm messages general
-
-# Your DMs with someone
 mm messages @colleague
 ```
 
-## Where config is stored
+## Where config lives
 
-Credentials are saved to `$HOME/.config/mm/config.json`. The file contains your server URL and session token (not your password).
+`~/.config/mm/config.json` (file mode `0600`, directory `0700`). Contains
+the server URL and the session token. **No password is ever written to
+disk.**
 
-You can also configure via environment variables, which take precedence over the config file:
+## Environment variables
 
-| Variable | Purpose |
-|----------|---------|
-| `MATTERMOST_URL` | Server URL |
-| `MATTERMOST_TOKEN` | Auth token |
+Env vars override the config file:
+
+| Variable          | Purpose |
+|-------------------|---------|
+| `MATTERMOST_URL`  | Server URL |
+| `MATTERMOST_TOKEN`| Auth token (PAT or session) |
 | `MATTERMOST_TEAM` | Default team filter |
-| `MM_CONFIG_PATH` | Custom config file path |
 
 ## Multiple servers
 
-The config file stores one server at a time. To switch between servers, re-run `mm login` with a different `--url`. If you need to work with multiple servers simultaneously, use environment variables:
+The config file holds one server. Either re-run `mm login` with a different
+`--url` to switch, or use env vars per-invocation:
 
 ```bash
-MATTERMOST_URL=https://chat-a.example.com MATTERMOST_TOKEN=abc123 mm overview
-MATTERMOST_URL=https://chat-b.example.com MATTERMOST_TOKEN=def456 mm overview
+MATTERMOST_URL=https://chat-a.example.com MATTERMOST_TOKEN=abc mm overview
+MATTERMOST_URL=https://chat-b.example.com MATTERMOST_TOKEN=def mm overview
+```
+
+## Shell completion
+
+Homebrew installs completions for you. Manual setup:
+
+```bash
+mm completion bash > /usr/local/etc/bash_completion.d/mm
+mm completion zsh  > "${fpath[1]}/_mm"
+mm completion fish > ~/.config/fish/completions/mm.fish
 ```
 
 ## Troubleshooting
 
-**"No credentials found"** - Run `mm login` first.
+**Exit code 2 / "Auth expired"** — run `mm login` again. Use a PAT to avoid
+recurrence.
 
-**"Auth expired"** - Your session token expired. Run `mm login` again. Consider using a Personal Access Token instead (they don't expire).
+**Exit code 3 / "rate limited"** — back off (Mattermost server limit hit).
 
-**"Unable to reach server"** - Check the URL. Make sure you can reach it from where you're running `mm` (VPN, firewall, etc.).
+**`Unable to reach server` / TLS errors** — network/VPN/firewall reachability.
+For self-signed certs, set `SSL_CERT_FILE` to your CA bundle.
 
-**SSL errors** - If your server uses a self-signed certificate, you may need to set `REQUESTS_CA_BUNDLE` or `SSL_CERT_FILE` to your CA bundle path.
+**`go install` builds an old version** — pin a tag: `go install
+github.com/ayusavin/mattermost-cli/cmd/mm@v0.1.0`. Prefer Homebrew for
+release-cadence updates.
+
+**`brew install` says "Error: Cask 'mm' is unavailable"** — make sure you
+used the full tap path: `ayusavin/tap/mm`, not just `mm`.

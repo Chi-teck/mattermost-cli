@@ -1,149 +1,249 @@
 # Command Reference
 
-Full reference for every `mm` command. All commands output JSON by default; add `--human` for markdown.
+Full reference for every `mm` command. JSON by default, `--human` for
+markdown.
 
-Global options (before the command name):
-- `--human` - markdown output instead of JSON
-- `--team TEXT` - filter to a specific team
-- `--debug` - verbose error output
+Global flags (any position):
+- `--human` — markdown output instead of JSON
+- `--team TEXT` — restrict to a specific team
+- `--debug` — verbose error output
 
-## overview
+Exit codes: `0` OK · `1` generic · `2` auth expired (run `mm login`) ·
+`3` rate limited.
 
-Get oriented in one call. This is the starting point.
+---
+
+## Read commands
+
+### `overview`
+
+The starting point. Returns `{ mentions, unread, active_channels }` in one
+call. Each channel has a `ref` you can pass to `mm messages`.
 
 ```
 mm overview [--since 6h]
 ```
 
-Returns `{ mentions, unread, active_channels }`. Each channel has a `ref` field usable with `mm messages`.
-
-## messages
+### `messages`
 
 Read messages from a channel.
 
 ```
-mm messages <channel> [--since 1h] [--limit 30] [--threads]
+mm messages <ref> [--since 1h] [--limit 30] [--threads]
 ```
 
-- `channel` - channel name, `@username` for DMs, or channel ID for group DMs
-- `--threads` - group by thread showing root message, reply count, and last reply
-- `--since` - time filter (`1h`, `2d`, `today`, `2025-03-05`, `0` for all)
-- `--limit` - max messages (max 200)
+- `<ref>` — channel name, `@username` (DM), `~name`, or channel ID (group DMs)
+- `--since` — `1h`, `2d`, `today`, `2025-03-05`, or `0` for all time
+- `--limit` — max messages, capped at 200
+- `--threads` — group by thread (root + reply count + last reply)
 
-## thread
+### `thread`
 
-Read a full thread conversation.
+Read a thread conversation.
 
 ```
 mm thread <post_id> [--limit 10] [--since 1h]
 ```
 
-- `post_id` - any post ID from the thread (root or reply); use `thread_id` from other commands
-- `--limit 0` - all replies (default: root + 9 replies)
-- `--since` - only replies after this time (root always included)
+- `<post_id>` accepts any post ID in the thread (root or reply), or a permalink
+- `--limit 0` — all replies (default: root + 9)
+- `--since` — filter replies; root is always included for context
 
-## mentions
+### `mentions`
 
-Posts that @-mention you. Reply-mentions include `root` context (the original message being replied to).
+Posts @-mentioning you. Reply-mentions include a `root` field with the
+original message — no follow-up call needed.
 
 ```
 mm mentions [--since 1d] [--limit 30]
 ```
 
-## search
+### `search`
 
-Full-text search across all teams.
-
-```
-mm search <query> [--limit 30]
-```
-
-Supports Mattermost search modifiers:
-- `from:username` - posts by a specific user
-- `in:channel` - posts in a specific channel
-- `before:2025-03-05` / `after:2025-03-05` / `on:2025-03-05` - date filters
-
-## channel
-
-Show info about a single channel.
+Full-text search across all your teams.
 
 ```
-mm channel <name>
+mm search "<query>" [--limit 30]
 ```
 
-Returns purpose, header, member count, pinned count, last post time, creation date.
+Supports Mattermost search modifiers: `from:user`, `in:channel`,
+`before:`, `after:`, `on:` with `YYYY-MM-DD` dates.
 
-## channels
+### `channel`
 
-List all channels you belong to.
+Single-channel summary.
+
+```
+mm channel <ref>
+```
+
+### `channels`
+
+List channels you belong to.
 
 ```
 mm channels [--type public|private|dm|group] [--since 6h]
 ```
 
-- `--type` - filter by channel type
-- `--since` - only channels with posts since this time
+### `unread`
 
-## unread
-
-Show channels with unread messages. Muted channels hidden by default.
+Channels with unread messages.
 
 ```
 mm unread [--include-muted]
 ```
 
-## pinned
+### `pinned`
 
-Show pinned posts in a channel.
-
-```
-mm pinned <channel> [--limit 10]
-```
-
-## members
-
-List channel members with online status.
+Pinned posts in a channel.
 
 ```
-mm members <channel>
+mm pinned <ref> [--limit 10]
 ```
 
-Sorted by status (online first). Shows username, full name, position, and status.
+### `members`
 
-## user
-
-Show user profile and status.
+Channel members with online status (online sorted first).
 
 ```
-mm user <username>
+mm members <ref>
 ```
 
-Username can be with or without `@` prefix. Returns name, position, email, status, timezone.
+### `user`
 
-## login
-
-Authenticate with Mattermost.
+User profile, status, timezone.
 
 ```
-mm login [--url URL] [--token TOKEN] [--user USER] [--password PASS]
+mm user @username
 ```
 
-Two auth methods:
-1. **Personal Access Token** (recommended): `mm login --url https://chat.example.com --token YOUR_TOKEN`
-2. **Password + MFA**: `mm login --url https://chat.example.com` (interactive prompt)
+`@` prefix is optional.
 
-## logout
+### `watch`
 
-Revoke session and clear stored credentials.
+Stream Mattermost WebSocket events to stdout (line-delimited JSON). Useful
+for tail-style monitoring.
+
+```
+mm watch
+```
+
+Ctrl-C to stop.
+
+---
+
+## Write commands
+
+All write commands return the created/updated resource as JSON.
+
+### `post`
+
+```
+mm post <ref> -m "body"
+echo "body" | mm post <ref> --read
+```
+
+### `reply`
+
+```
+mm reply <post_id> -m "body"
+echo "body" | mm reply <post_id> --read
+```
+
+### `dm`
+
+Send a direct message. Opens (or reuses) the DM channel.
+
+```
+mm dm @username -m "body"
+```
+
+Self-DM is allowed (`mm dm @<you>`).
+
+### `react` / `unreact`
+
+```
+mm react   <post_id> :emoji_name:
+mm unreact <post_id> :emoji_name:
+```
+
+Colons around the emoji name are accepted but not required — both `+1`
+and `:+1:` work.
+
+### `pin` / `unpin`
+
+```
+mm pin   <post_id>
+mm unpin <post_id>
+```
+
+### `edit`
+
+Edit your own post.
+
+```
+mm edit <post_id> -m "new body"
+echo "new body" | mm edit <post_id> --read
+```
+
+### `delete`
+
+Delete your own post. Requires `--yes` to confirm.
+
+```
+mm delete <post_id> --yes
+```
+
+Don't supply `--yes` without explicit user confirmation.
+
+### `mark-read`
+
+Reset the unread badge on a channel.
+
+```
+mm mark-read <ref>
+```
+
+### `status`
+
+```
+mm status <state>                              # online | away | dnd | offline
+mm status online -m "in a call" --emoji :phone:
+mm status --clear                              # remove custom status only
+```
+
+---
+
+## Auth commands
+
+### `login`
+
+```
+mm login --url https://chat.example.com --token YOUR_PAT
+echo "$PAT" | mm login --url ... --read-token         # token from stdin
+mm login --url ... --login user@example.com --mfa 123456   # password+MFA
+```
+
+### `logout`
+
+Revoke the session and clear `~/.config/mm/config.json`.
 
 ```
 mm logout
 ```
 
-## whoami
+### `whoami`
 
-Show current user info and validate auth.
+Validate the current credentials; print user + teams.
 
 ```
 mm whoami
+```
+
+### `completion`
+
+Generate shell completion scripts.
+
+```
+mm completion bash | zsh | fish | powershell
 ```
