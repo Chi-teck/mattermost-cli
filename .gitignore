@@ -1,18 +1,12 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
-build/
-.eggs/
-*.egg
-.venv/
-venv/
-.tox/
-.pytest_cache/
-
-# Go
+# Go build artifacts
 /mm
 /mm-*
-dist/
-bin/
+/dist/
+/bin/
+
+# IDE
+.idea/
+.vscode/
+
+# Smoke-test local creds
+/.env.smoke
