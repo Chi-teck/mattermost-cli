@@ -71,8 +71,8 @@ func runOverview(ctx context.Context, sinceExpr string, mentionLimit int) error 
 		}
 	}
 
-	var unreads []unreadRow
-	var mentions []format.EnrichedPost
+	unreads := []unreadRow{}
+	mentions := []format.EnrichedPost{}
 	var mentionLines []string
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {

@@ -64,7 +64,7 @@ type unreadRow struct {
 
 func computeUnreadRows(ctx context.Context, c *Context, teams []*model.Team, resolver *resolve.Resolver) ([]unreadRow, error) {
 	seen := make(map[string]bool)
-	var rows []unreadRow
+	rows := []unreadRow{}
 	for _, team := range teams {
 		channels, members, err := fetchUnreadInputsForTeam(ctx, c, team)
 		if err != nil {
