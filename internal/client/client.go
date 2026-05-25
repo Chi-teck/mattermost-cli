@@ -92,9 +92,15 @@ func New(rawURL, token string) (*model.Client4, error) {
 }
 
 // Login validates credentials. Returns the logged-in user on success.
-// For PAT auth, this simply calls GetMe.
+// For PAT auth, this simply calls GetMe (with retry on transient network errors).
 func Login(ctx context.Context, c API) (*model.User, error) {
-	u, _, err := c.GetMe(ctx, "")
+	var u *model.User
+	_, err := Retry(ctx, func() (*model.Response, error) {
+		var resp *model.Response
+		var err error
+		u, resp, err = c.GetMe(ctx, "")
+		return resp, err
+	})
 	if err != nil {
 		return nil, classifyAuthError(err)
 	}
@@ -155,7 +161,7 @@ func normalizeURL(raw string) (*url.URL, error) {
 func Retry(ctx context.Context, op func() (*model.Response, error)) (*model.Response, error) {
 	bo := backoff.NewExponentialBackOff()
 	bo.InitialInterval = 500 * time.Millisecond
-	bo.MaxElapsedTime = 15 * time.Second
+	bo.MaxElapsedTime = 45 * time.Second
 	bctx := backoff.WithContext(bo, ctx)
 
 	var resp *model.Response
