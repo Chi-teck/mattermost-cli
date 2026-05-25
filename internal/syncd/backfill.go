@@ -35,6 +35,11 @@ func (d *Daemon) Backfill(ctx context.Context) error {
 
 		var authorIDs []string
 		for _, ch := range channels {
+			if ch.TeamId == "" {
+				// DMs/group DMs have no team; tag with the listing team so
+				// `channels`/`unread` show the same team as the live commands.
+				ch.TeamId = team.Id
+			}
 			if err := d.upsertChannelWithName(ctx, ch); err != nil {
 				return err
 			}

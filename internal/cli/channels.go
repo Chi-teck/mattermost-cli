@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"sort"
@@ -32,6 +33,14 @@ func newChannelsCmd() *cobra.Command {
 			chType, err := parseChannelTypeFlag(typeFlag)
 			if err != nil {
 				return err
+			}
+			if db, ok := openFreshLocalCache(ctx); ok {
+				rows, lerr := channelsLocal(ctx, db, chType)
+				_ = db.Close()
+				if lerr == nil {
+					return writeChannelRows(rows)
+				}
+				// local read failed (e.g. transient) — fall back to live
 			}
 			c, err := LoadContext(ctx)
 			if err != nil {
@@ -69,15 +78,72 @@ func newChannelsCmd() *cobra.Command {
 				return err
 			}
 			rows := buildChannelRows(channels, displayNames, teamByChannelID)
-			if Globals.Human {
-				fmt.Fprintln(os.Stdout, format.ChannelsMarkdown(rows))
-				return nil
-			}
-			return writeJSON(os.Stdout, rows)
+			return writeChannelRows(rows)
 		},
 	}
 	cmd.Flags().StringVar(&typeFlag, "type", "all", "Filter by channel type: O, P, D, G, or all")
 	return cmd
+}
+
+// writeChannelRows renders channel rows identically for the local and live paths.
+func writeChannelRows(rows []format.ChannelRow) error {
+	if Globals.Human {
+		fmt.Fprintln(os.Stdout, format.ChannelsMarkdown(rows))
+		return nil
+	}
+	return writeJSON(os.Stdout, rows)
+}
+
+// channelsLocal lists the user's channels from the cache, mirroring the live
+// command's ChannelRow output (resolved display names, sorted by team + name).
+func channelsLocal(ctx context.Context, db *sql.DB, chType model.ChannelType) ([]format.ChannelRow, error) {
+	teamID, err := localTeamID(ctx, db, Globals.Team)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT c.id, c.name, c.display_name, c.type, COALESCE(t.display_name, '')
+		FROM channels c LEFT JOIN teams t ON t.id = c.team_id
+		WHERE c.delete_at = 0`
+	args := []any{}
+	if chType != "" {
+		query += " AND c.type = ?"
+		args = append(args, string(chType))
+	}
+	if teamID != "" {
+		query += " AND c.team_id = ?"
+		args = append(args, teamID)
+	}
+
+	sqlRows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer sqlRows.Close()
+
+	rows := []format.ChannelRow{}
+	for sqlRows.Next() {
+		var id, name, displayName, typ, teamName string
+		if err := sqlRows.Scan(&id, &name, &displayName, &typ, &teamName); err != nil {
+			return nil, err
+		}
+		if displayName == "" {
+			displayName = name
+		}
+		chType := model.ChannelType(typ)
+		rows = append(rows, format.ChannelRow{
+			ID:          id,
+			Name:        name,
+			DisplayName: displayName,
+			Type:        format.ChannelTypeLabel(chType),
+			Team:        teamName,
+			Ref:         format.ChannelRef(&model.Channel{Id: id, Name: name, Type: chType}),
+		})
+	}
+	if err := sqlRows.Err(); err != nil {
+		return nil, err
+	}
+	format.SortChannels(rows)
+	return rows, nil
 }
 
 func parseChannelTypeFlag(value string) (model.ChannelType, error) {

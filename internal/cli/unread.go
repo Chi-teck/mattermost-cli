@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"sort"
@@ -28,6 +29,14 @@ func newUnreadCmd() *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
+			if db, ok := openFreshLocalCache(ctx); ok {
+				rows, lerr := unreadRowsLocal(ctx, db)
+				_ = db.Close()
+				if lerr == nil {
+					return writeUnreadRows(rows)
+				}
+				// local read failed — fall back to live
+			}
 			c, err := LoadContext(ctx)
 			if err != nil {
 				return err
@@ -41,13 +50,75 @@ func newUnreadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if Globals.Human {
-				fmt.Fprintln(os.Stdout, unreadMarkdown(rows))
-				return nil
-			}
-			return writeJSON(os.Stdout, rows)
+			return writeUnreadRows(rows)
 		},
 	}
+}
+
+// writeUnreadRows renders unread rows identically for the local and live paths.
+func writeUnreadRows(rows []unreadRow) error {
+	if Globals.Human {
+		fmt.Fprintln(os.Stdout, unreadMarkdown(rows))
+		return nil
+	}
+	return writeJSON(os.Stdout, rows)
+}
+
+// unreadRowsLocal computes unread channels from the cache, mirroring the live
+// command: unread = total_msg_count - read position, sorted by last activity.
+func unreadRowsLocal(ctx context.Context, db *sql.DB) ([]unreadRow, error) {
+	teamID, err := localTeamID(ctx, db, Globals.Team)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT c.id, c.name, c.display_name, c.type, COALESCE(t.display_name, ''),
+		(c.total_msg_count - cm.msg_count) AS unread, cm.mention_count, c.last_post_at
+		FROM channels c
+		JOIN channel_members cm ON cm.channel_id = c.id
+		LEFT JOIN teams t ON t.id = c.team_id
+		WHERE c.delete_at = 0 AND (c.total_msg_count - cm.msg_count) > 0`
+	args := []any{}
+	if teamID != "" {
+		query += " AND c.team_id = ?"
+		args = append(args, teamID)
+	}
+
+	sqlRows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer sqlRows.Close()
+
+	rows := []unreadRow{}
+	for sqlRows.Next() {
+		var id, name, displayName, typ, teamName string
+		var unread, mention, lastPostAt int64
+		if err := sqlRows.Scan(&id, &name, &displayName, &typ, &teamName, &unread, &mention, &lastPostAt); err != nil {
+			return nil, err
+		}
+		if displayName == "" {
+			displayName = name
+		}
+		chType := model.ChannelType(typ)
+		rows = append(rows, unreadRow{
+			ID:           id,
+			Name:         name,
+			DisplayName:  displayName,
+			Type:         format.ChannelTypeLabel(chType),
+			Team:         teamName,
+			Ref:          format.ChannelRef(&model.Channel{Id: id, Name: name, Type: chType}),
+			UnreadCount:  unread,
+			MentionCount: mention,
+			LastPostAt:   format.TimestampMS(lastPostAt),
+		})
+	}
+	if err := sqlRows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].LastPostAt > rows[j].LastPostAt
+	})
+	return rows, nil
 }
 
 type unreadRow struct {

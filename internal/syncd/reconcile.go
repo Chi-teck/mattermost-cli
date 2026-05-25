@@ -32,6 +32,9 @@ func (d *Daemon) Reconcile(ctx context.Context) error {
 
 		var authors []string
 		for _, ch := range channels {
+			if ch.TeamId == "" {
+				ch.TeamId = team.Id // see backfill: tag teamless DMs with the listing team
+			}
 			if err := d.upsertChannelWithName(ctx, ch); err != nil {
 				return err
 			}

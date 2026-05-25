@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 
+	"github.com/ayusavin/mattermost-cli/internal/errs"
 	"github.com/ayusavin/mattermost-cli/internal/store"
 	"github.com/ayusavin/mattermost-cli/internal/syncd"
 )
@@ -30,4 +31,23 @@ func openFreshLocalCache(ctx context.Context) (*sql.DB, bool) {
 		return nil, false
 	}
 	return db, true
+}
+
+// localTeamID resolves a team reference (id/name/display name) to a team id
+// using the local cache. An empty ref means "all teams" and returns "".
+func localTeamID(ctx context.Context, db *sql.DB, ref string) (string, error) {
+	if ref == "" {
+		return "", nil
+	}
+	var id string
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM teams WHERE id=? OR name=? OR display_name=? LIMIT 1`,
+		ref, ref, ref).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", errs.Errorf(errs.CodeGeneric, "team %q not found", ref)
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
 }
