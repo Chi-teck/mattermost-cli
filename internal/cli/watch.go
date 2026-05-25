@@ -5,9 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"path"
 	"strings"
 	"time"
 
@@ -15,12 +13,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ayusavin/mattermost-cli/internal/errs"
+	"github.com/ayusavin/mattermost-cli/internal/wsutil"
 )
 
-const (
-	defaultWatchTypes = "posted,reaction_added,reaction_removed,channel_viewed,status_change,typing"
-	watchAPISuffix    = "/api/v4/websocket"
-)
+const defaultWatchTypes = "posted,reaction_added,reaction_removed,channel_viewed,status_change,typing"
 
 func init() {
 	Register(newWatchCmd)
@@ -66,12 +62,8 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 	if err != nil {
 		return err
 	}
-	wsURL, err := wsURLFromAPIURL(lc.Cfg.URL)
-	if err != nil {
-		return errs.Errorf(errs.CodeGeneric, "build websocket URL: %s", err.Error())
-	}
 
-	client, err := connectWatchWebSocket(wsURL, lc.Cfg.Token)
+	client, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
 	if err != nil {
 		return errs.Errorf(errs.CodeGeneric, "connect websocket: %s", err.Error())
 	}
@@ -109,7 +101,7 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 	reconnect := func(reason string) error {
 		fmt.Fprintf(os.Stderr, "warning: websocket %s; reconnecting once\n", reason)
 		client.Close()
-		next, err := connectWatchWebSocket(wsURL, lc.Cfg.Token)
+		next, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
 		if err != nil {
 			return errs.Errorf(errs.CodeGeneric, "reconnect websocket after %s: %s", reason, err.Error())
 		}
@@ -167,76 +159,94 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 	}
 }
 
-func connectWatchWebSocket(wsURL, token string) (*model.WebSocketClient, error) {
-	// NewWebSocketClient4 appends /api/v4/websocket internally, so pass the base URL.
-	wsBaseURL := strings.TrimSuffix(wsURL, watchAPISuffix)
-	c, err := model.NewWebSocketClient4(wsBaseURL, token)
-	if err != nil {
-		return nil, err
-	}
-	c.Listen()
-	go drainWatchResponses(c.ResponseChannel)
-	return c, nil
-}
-
-func drainWatchResponses(ch <-chan *model.WebSocketResponse) {
-	for range ch {
+func formatWatchEventJSON(ev *model.WebSocketEvent, ts time.Time) watchEventLine {
+	return watchEventLine{
+		Type:      string(ev.EventType()),
+		Timestamp: ts.Format(time.RFC3339),
+		ChannelID: wsutil.ChannelID(ev),
+		TeamID:    wsutil.TeamID(ev),
+		UserID:    wsutil.UserID(ev),
+		Data:      wsutil.EventData(ev),
 	}
 }
 
-func wsURLFromAPIURL(raw string) (string, error) {
-	u, err := parseWatchURL(raw)
-	if err != nil {
-		return "", err
-	}
-	return watchURLWithSuffix(u), nil
-}
-
-func wsBaseURLFromAPIURL(raw string) (string, error) {
-	u, err := parseWatchURL(raw)
-	if err != nil {
-		return "", err
-	}
-	return u.String(), nil
-}
-
-func parseWatchURL(raw string) (*url.URL, error) {
-	if raw == "" {
-		return nil, fmt.Errorf("empty URL")
-	}
-	if !strings.Contains(raw, "://") {
-		raw = "https://" + raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, err
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("no host in URL %q", raw)
-	}
-	switch u.Scheme {
-	case "https":
-		u.Scheme = "wss"
-	case "http":
-		u.Scheme = "ws"
+func formatWatchEventHuman(ev *model.WebSocketEvent, ts time.Time) string {
+	data := wsutil.EventData(ev)
+	clock := ts.Local().Format("15:04:05")
+	switch ev.EventType() {
+	case model.WebsocketEventPosted:
+		post := extractPost(data)
+		user := post.UserID
+		if user == "" {
+			user = wsutil.UserID(ev)
+		}
+		channel := post.ChannelID
+		if channel == "" {
+			channel = wsutil.ChannelID(ev)
+		}
+		return fmt.Sprintf("[%s] @%s in #%s: %s", clock, user, channel, shortPreview(post.Message, 60))
+	case model.WebsocketEventReactionAdded:
+		reaction := extractReaction(data)
+		user := wsutil.FirstNonEmpty(reaction.UserID, wsutil.UserID(ev))
+		channel := wsutil.FirstNonEmpty(reaction.ChannelID, wsutil.ChannelID(ev))
+		emoji := wsutil.FirstNonEmpty(reaction.EmojiName, wsutil.StringFromMap(data, "emoji_name"))
+		return fmt.Sprintf("[%s] @%s reacted :%s: in #%s", clock, user, emoji, channel)
 	default:
-		return nil, fmt.Errorf("unsupported scheme %q", u.Scheme)
+		return fmt.Sprintf("[%s] %s in %s", clock, ev.EventType(), wsutil.ChannelID(ev))
 	}
-	u.RawQuery = ""
-	u.Fragment = ""
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u, nil
 }
 
-func watchURLWithSuffix(u *url.URL) string {
-	v := *u
-	base := strings.TrimRight(v.Path, "/")
-	if base == "" {
-		v.Path = watchAPISuffix
-	} else {
-		v.Path = path.Join(base, "api", "v4", "websocket")
+type watchPostPreview struct {
+	Message   string
+	UserID    string
+	ChannelID string
+}
+
+func extractPost(data map[string]any) watchPostPreview {
+	var post watchPostPreview
+	wsutil.DecodePayload(data["post"], &struct {
+		Message   *string `json:"message"`
+		UserID    *string `json:"user_id"`
+		ChannelID *string `json:"channel_id"`
+	}{Message: &post.Message, UserID: &post.UserID, ChannelID: &post.ChannelID})
+	post.Message = wsutil.FirstNonEmpty(post.Message, wsutil.StringFromMap(data, "message"))
+	post.UserID = wsutil.FirstNonEmpty(post.UserID, wsutil.StringFromMap(data, "user_id"))
+	post.ChannelID = wsutil.FirstNonEmpty(post.ChannelID, wsutil.StringFromMap(data, "channel_id"))
+	return post
+}
+
+type watchReactionPreview struct {
+	EmojiName string
+	UserID    string
+	ChannelID string
+}
+
+func extractReaction(data map[string]any) watchReactionPreview {
+	var reaction watchReactionPreview
+	wsutil.DecodePayload(data["reaction"], &struct {
+		EmojiName *string `json:"emoji_name"`
+		UserID    *string `json:"user_id"`
+		ChannelID *string `json:"channel_id"`
+	}{EmojiName: &reaction.EmojiName, UserID: &reaction.UserID, ChannelID: &reaction.ChannelID})
+	reaction.EmojiName = wsutil.FirstNonEmpty(reaction.EmojiName, wsutil.StringFromMap(data, "emoji_name"))
+	reaction.UserID = wsutil.FirstNonEmpty(reaction.UserID, wsutil.StringFromMap(data, "user_id"))
+	reaction.ChannelID = wsutil.FirstNonEmpty(reaction.ChannelID, wsutil.StringFromMap(data, "channel_id"))
+	return reaction
+}
+
+func shortPreview(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max <= 0 {
+		return ""
 	}
-	return v.String()
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(runes[:max])
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 func parseWatchEventTypes(csv string) map[model.WebsocketEventType]bool {
@@ -263,7 +273,7 @@ func eventChannelIncluded(ev *model.WebSocketEvent, channels map[string]bool) bo
 	if len(channels) == 0 {
 		return true
 	}
-	_, ok := channels[eventChannelID(ev)]
+	_, ok := channels[wsutil.ChannelID(ev)]
 	return ok
 }
 
@@ -276,170 +286,4 @@ func stringSet(values []string) map[string]bool {
 		}
 	}
 	return set
-}
-
-func formatWatchEventJSON(ev *model.WebSocketEvent, ts time.Time) watchEventLine {
-	return watchEventLine{
-		Type:      string(ev.EventType()),
-		Timestamp: ts.Format(time.RFC3339),
-		ChannelID: eventChannelID(ev),
-		TeamID:    eventTeamID(ev),
-		UserID:    eventUserID(ev),
-		Data:      mergedWatchEventData(ev),
-	}
-}
-
-func mergedWatchEventData(ev *model.WebSocketEvent) map[string]any {
-	data := make(map[string]any)
-	if b := ev.GetBroadcast(); b != nil {
-		if b.TeamId != "" {
-			data["team_id"] = b.TeamId
-		}
-		if b.ChannelId != "" {
-			data["channel_id"] = b.ChannelId
-		}
-		if b.UserId != "" {
-			data["user_id"] = b.UserId
-		}
-		if b.ConnectionId != "" {
-			data["connection_id"] = b.ConnectionId
-		}
-	}
-	for k, v := range ev.GetData() {
-		data[k] = v
-	}
-	return data
-}
-
-func eventChannelID(ev *model.WebSocketEvent) string {
-	if b := ev.GetBroadcast(); b != nil && b.ChannelId != "" {
-		return b.ChannelId
-	}
-	return stringFromMap(ev.GetData(), "channel_id")
-}
-
-func eventTeamID(ev *model.WebSocketEvent) string {
-	if b := ev.GetBroadcast(); b != nil && b.TeamId != "" {
-		return b.TeamId
-	}
-	return stringFromMap(ev.GetData(), "team_id")
-}
-
-func eventUserID(ev *model.WebSocketEvent) string {
-	if b := ev.GetBroadcast(); b != nil && b.UserId != "" {
-		return b.UserId
-	}
-	return stringFromMap(ev.GetData(), "user_id")
-}
-
-func formatWatchEventHuman(ev *model.WebSocketEvent, ts time.Time) string {
-	data := mergedWatchEventData(ev)
-	clock := ts.Local().Format("15:04:05")
-	switch ev.EventType() {
-	case model.WebsocketEventPosted:
-		post := extractPost(data)
-		user := post.UserID
-		if user == "" {
-			user = eventUserID(ev)
-		}
-		channel := post.ChannelID
-		if channel == "" {
-			channel = eventChannelID(ev)
-		}
-		return fmt.Sprintf("[%s] @%s in #%s: %s", clock, user, channel, shortPreview(post.Message, 60))
-	case model.WebsocketEventReactionAdded:
-		reaction := extractReaction(data)
-		user := firstNonEmpty(reaction.UserID, eventUserID(ev))
-		channel := firstNonEmpty(reaction.ChannelID, eventChannelID(ev))
-		emoji := firstNonEmpty(reaction.EmojiName, stringFromMap(data, "emoji_name"))
-		return fmt.Sprintf("[%s] @%s reacted :%s: in #%s", clock, user, emoji, channel)
-	default:
-		return fmt.Sprintf("[%s] %s in %s", clock, ev.EventType(), eventChannelID(ev))
-	}
-}
-
-type watchPostPreview struct {
-	Message   string
-	UserID    string
-	ChannelID string
-}
-
-func extractPost(data map[string]any) watchPostPreview {
-	var post watchPostPreview
-	decodeWatchPayload(data["post"], &struct {
-		Message   *string `json:"message"`
-		UserID    *string `json:"user_id"`
-		ChannelID *string `json:"channel_id"`
-	}{Message: &post.Message, UserID: &post.UserID, ChannelID: &post.ChannelID})
-	post.Message = firstNonEmpty(post.Message, stringFromMap(data, "message"))
-	post.UserID = firstNonEmpty(post.UserID, stringFromMap(data, "user_id"))
-	post.ChannelID = firstNonEmpty(post.ChannelID, stringFromMap(data, "channel_id"))
-	return post
-}
-
-type watchReactionPreview struct {
-	EmojiName string
-	UserID    string
-	ChannelID string
-}
-
-func extractReaction(data map[string]any) watchReactionPreview {
-	var reaction watchReactionPreview
-	decodeWatchPayload(data["reaction"], &struct {
-		EmojiName *string `json:"emoji_name"`
-		UserID    *string `json:"user_id"`
-		ChannelID *string `json:"channel_id"`
-	}{EmojiName: &reaction.EmojiName, UserID: &reaction.UserID, ChannelID: &reaction.ChannelID})
-	reaction.EmojiName = firstNonEmpty(reaction.EmojiName, stringFromMap(data, "emoji_name"))
-	reaction.UserID = firstNonEmpty(reaction.UserID, stringFromMap(data, "user_id"))
-	reaction.ChannelID = firstNonEmpty(reaction.ChannelID, stringFromMap(data, "channel_id"))
-	return reaction
-}
-
-func decodeWatchPayload(value any, dst any) {
-	switch v := value.(type) {
-	case string:
-		_ = json.Unmarshal([]byte(v), dst)
-	case []byte:
-		_ = json.Unmarshal(v, dst)
-	case map[string]any:
-		b, err := json.Marshal(v)
-		if err == nil {
-			_ = json.Unmarshal(b, dst)
-		}
-	}
-}
-
-func stringFromMap(data map[string]any, key string) string {
-	if data == nil {
-		return ""
-	}
-	if s, ok := data[key].(string); ok {
-		return s
-	}
-	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func shortPreview(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if max <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	if max <= 3 {
-		return string(runes[:max])
-	}
-	return string(runes[:max-3]) + "..."
 }
