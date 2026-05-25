@@ -1,97 +1,98 @@
 # Agent Instructions
 
-Instructions for AI agents working on this repository.
+Conventions for AI agents (and humans) working on this repository.
 
 ## Overview
 
-mattermost-cli is a Mattermost CLI for humans and agents. JSON output by default for agent consumption, `--human` flag for markdown. Published to PyPI as `mattermost-cli`, CLI command is `mm`.
+`mattermost-cli` is a Go CLI named `mm` for reading and writing in Mattermost.
+JSON-first output for agent consumption; `--human` for markdown. Distributed as
+a single static binary via Homebrew tap and GitHub releases.
 
-## Architecture
+## Layout
 
 ```
-mmchat/
-  cli.py         # Click commands - all 8 commands, State object, argument resolution
-  client.py      # Driver wrapper - URL parsing, auth, MMContext, Team dataclass
-  config.py      # Token storage at ~/.config/mm/config.json (0600 perms)
-  resolve.py     # User/channel ID resolution with in-memory caching (Resolver class)
-  formatters.py  # JSON (default) and markdown output formatting
-  time_utils.py  # --since argument parsing (relative, named, absolute, raw epoch)
-tests/
-  test_time_utils.py  # Pure function tests
-  test_config.py      # File I/O with tmp_path fixtures
-  test_client.py      # URL parsing, formatter output shapes
+cmd/mm/                       # main package, exits with internal/errs codes
+internal/
+  cli/                        # cobra commands (one file per command, init() registers it)
+  client/                     # SDK wrapper, retry/backoff, login, classify errors
+  config/                     # ~/.config/mm/config.json (0600), env-var override
+  errs/                       # typed ExitError + exit codes (0/1/2/3)
+  format/                     # EnrichedPost, ChannelRow shapes shared by commands
+  resolve/                    # user/channel lookup with per-session cache
+  timeparse/                  # --since argument parser (relative, named, absolute)
+scripts/smoke.sh              # end-to-end smoke against a live server
+.goreleaser.yaml              # cross-platform builds + brew formula
+.github/workflows/            # CI (go-ci.yml) and release (release.yml)
 ```
 
 ## Key design decisions
 
-**Read-only**: No write operations to Mattermost. The `_resolve_channel` function scans existing channels for DMs instead of using `create_direct_message_channel` (which is a write op).
+- **JSON first, markdown via `--human`.** Every command has both paths.
+- **Agent-tuned defaults.** `thread` shows last 9 replies; `mentions` defaults
+  to `--since 1d`; `messages` to `--limit 30`. Bare invocation should give
+  useful output without flags.
+- **Cross-team by default.** Read commands iterate all the user's teams and
+  dedupe. `--team` narrows.
+- **No passwords on disk.** Only session tokens or PATs (file mode `0600`,
+  directory mode `0700`).
+- **Retry with backoff** on 429, 5xx, and network errors via
+  `internal/client.Retry`. `Login` is wrapped too so cold TLS handshakes
+  don't fail single-shot commands.
 
-**JSON-first output**: Default output is JSON for agent consumption. `--human` flag switches to markdown tables. All formatters have both `format_*_json` and `format_*_md` variants.
+## Adding a command
 
-**Agent-tuned defaults**: Commands are tuned for an agent running them bare (no flags), then using `--help` to refine:
-- `mm thread` defaults to `--limit 10` (root + last 9 replies), not full thread
-- `mm mentions` defaults to `--since 1d`, not all time
-- `mm messages` defaults to `--limit 30`
+1. Create `internal/cli/<name>.go`.
+2. `func init() { Register(newXxxCmd) }`.
+3. `newXxxCmd()` returns a `*cobra.Command` whose `RunE` calls a `runXxx(ctx, ...)`.
+4. Inside the runner: `LoadContext(ctx)` for an authenticated SDK client;
+   `resolve.New(c.Client, c.Me.Id)` for name → object resolution.
+5. Output via `writeJSON(os.Stdout, value)` when `!Globals.Human`, else a
+   markdown render. Write commands return the created/updated resource so
+   agents can chain.
+6. Use `--message` + `--read` (stdin) for any command that takes free text.
+   See `internal/cli/m2_input.go::readMessageInput`.
 
-**Cross-team by default**: All data commands iterate all user teams and deduplicate results. `--team` narrows to one.
+## Conventions
 
-**No passwords on disk**: Only session tokens are stored. Password+MFA login creates a session token and stores that. Config file has 0600 permissions, directory 0700.
-
-## Dependencies
-
-- `mattermostdriver` (7.3.2) - wraps Mattermost REST API v4. The driver takes separate scheme/host/port options, NOT a full URL. `client.py:create_driver()` handles URL parsing.
-- `click` (8.0+) - CLI framework
-- `httpx` - HTTP client (used by mattermostdriver internally, also imported for ConnectError handling)
+- Channel references in write commands are resolved via
+  `resolveMessagesChannel` (accepts ID, name, or `~name`).
+- Post references in `reply`/`react`/`pin`/`edit`/`delete` go through
+  `extractPostID` so permalinks work too.
+- Destructive operations require `--yes` (currently just `delete`).
+- Empty result arrays must marshal to `[]`, never `null` — initialize as
+  `rows := []rowType{}` instead of `var rows []rowType`.
+- Use `model.Status*` constants from the SDK for status values, never raw strings.
 
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+go test ./... -count=1     # unit tests
+go vet ./...
+scripts/smoke.sh           # read-only end-to-end
+scripts/smoke.sh --write   # full write coverage
 ```
 
-Tests cover pure logic only (config, time parsing, URL parsing, formatters). API-dependent commands are tested manually against a live instance.
+Unit tests cover pure logic (timeparse, format, resolve, config, input
+parsing). Smoke is the only way we currently exercise the SDK.
 
-When adding tests: use `tmp_path` and `monkeypatch` for isolation. Don't mock the driver - test pure functions that don't need it.
+## Releases
 
-## Common patterns
+Tag with `vX.Y.Z` and push. The `release.yml` workflow runs GoReleaser,
+which builds darwin/linux amd64+arm64 archives, publishes a GitHub release,
+and updates `ayusavin/homebrew-tap`.
 
-**Adding a new CLI command**: 
-1. Add the function in `cli.py` with `@main.command()` and `@pass_state`
-2. Use `get_context(state)` to get authenticated `MMContext`
-3. Create `Resolver(ctx.driver, ctx.user_id)` if you need name resolution
-4. Output with `format_*_json` / `format_*_md` based on `state.human`
-
-**JSON output fields for posts**: Every post includes `thread_id` (root_id if reply, own id if root), `is_reply`, `reply_count` (on root posts only), `created_at` (ISO 8601), `file_count`, and `files` (with name/size when available). These fields exist specifically for agent triage workflows.
-
-**The `ref` field**: `mm unread` and `mm channels` JSON output includes a `ref` field - the exact string to pass to `mm messages <ref>`. For named channels this is the channel name (e.g. `gtt`), for DMs/group DMs it's the channel_id (since their display names like "karan, rhnvrm, shravan.bk" aren't addressable). Always use `ref`, never `channel` or `channel_id` directly.
-
-**Resolver caching**: `Resolver` caches user and channel lookups per session. Use `resolve_users()` for batch resolution (one API call for all uncached IDs). Call `format_channel()` (public method) for channel info - not `_resolve_dm_name` directly.
+Required secrets:
+- `HOMEBREW_TAP_TOKEN` — PAT with `contents: write` on the tap repo.
 
 ## Gotchas
 
-- The mattermostdriver logs passwords when `debug=True`. `create_driver()` always sets `debug=False`.
-- DM channel names are `{uid1}__{uid2}` (double underscore). Group DMs are hashes.
-- `get_channels_for_user` returns raw API channel dicts. The `type` field is a single letter: O/P/D/G. Formatters map these to "Public"/"Private"/"DM"/"Group DM".
-- Thread API returns posts newest-first. Must sort by `create_at` for chronological display.
-- The `--since` filter on `mm thread` keeps the root post regardless of age (for context), then filters replies by time.
-- `reply_count` comes from the Mattermost API post object - only present on root posts that have replies.
-- File metadata (`name`, `size`) is in `post["metadata"]["files"]` - only present when the API returns it (depends on post age and server config).
-- `mm mentions` uses Mattermost search API with `@username after:YYYY-MM-DD` syntax. The `--since 0` disables the date filter.
-
-## Publishing
-
-```bash
-# Build
-python -m build
-
-# Upload to PyPI
-twine upload dist/*
-
-# Users install with
-uvx mmchat
-# or
-pip install mmchat
-```
-
-The PyPI package name is `mattermost-cli`. The CLI command is `mm`.
+- The Mattermost SDK takes `(scheme, host, port)`, not a URL — `client.New`
+  parses the URL and threads it through `model.NewAPIv4Client`.
+- DM channel names are `{uid1}__{uid2}` (double underscore); group DMs are
+  hashes. Display names are resolved via `Resolver.FormatChannelDisplayName`.
+- `GetPostsForChannel` returns posts newest-first; sort by `create_at` for
+  chronological display.
+- `GetPostThread` includes the root post but may also include posts from the
+  same channel that match thread queries — `selectThreadPosts` deduplicates.
+- Self-DM is valid in Mattermost — `dm @<me>` opens or reuses the user's own
+  DM channel.

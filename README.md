@@ -1,106 +1,122 @@
 # mattermost-cli
 
-Mattermost CLI for humans and agents.
+[![CI](https://github.com/ayusavin/mattermost-cli/actions/workflows/go-ci.yml/badge.svg)](https://github.com/ayusavin/mattermost-cli/actions/workflows/go-ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Mattermost CLI for humans and agents. Ships as a single static binary `mm`.
+JSON output by default for agent consumption; pass `--human` for markdown.
 
 ## Install
 
 ```bash
-# Run directly (no install)
-uvx --from mattermost-cli mm --help
+# macOS / Linux via Homebrew
+brew install ayusavin/tap/mm
 
-# Or install globally
-pip install mattermost-cli
+# Or download a release binary
+# https://github.com/ayusavin/mattermost-cli/releases
+
+# Or build from source
+go install github.com/ayusavin/mattermost-cli/cmd/mm@latest
 ```
 
-## Setup
+## Authenticate
 
 ```bash
-# Interactive login (password + MFA)
-mm login --url https://chat.example.com
-
-# Or with a Personal Access Token
-mm login --url https://chat.example.com --token <your-pat>
+# Personal Access Token (recommended)
+mm login --url https://chat.example.com --token <PAT>
 
 # Verify
 mm whoami
 ```
 
-## Usage
+Environment overrides config: `MATTERMOST_URL`, `MATTERMOST_TOKEN`,
+`MATTERMOST_TEAM`. The on-disk config lives at `~/.config/mm/config.json`
+(token only, `0600` permissions).
+
+## Read
 
 ```bash
-# Get oriented (mentions + unread + active channels in one call)
-mm overview
-
-# Read messages
-mm messages general
-mm messages general --since 1h
-mm messages general --threads       # thread index view
-mm messages @alice                  # DM with a user
-
-# Threads
-mm thread <post-id>                 # root + last 9 replies
-mm thread <post-id> --limit 0      # full thread
-
-# Search and mentions
-mm search "deployment issue"
-mm mentions                         # @-mentions in last 24h
-
-# Channel info
-mm channel general                  # purpose, members, pinned count
-mm channels --since 6h              # recently active channels
-mm unread                           # channels with unread messages
-mm pinned general                   # pinned posts
-mm members general                  # who's in the channel
-
-# People
-mm user @alice                      # profile, status, timezone
+mm overview                    # unreads + recent mentions in one call
+mm channels                    # all channels you're a member of
+mm channels --type D           # only DMs
+mm channel <ref>               # channel info (purpose, members, last activity)
+mm unread                      # channels with unread messages
+mm messages <ref> --limit 30   # recent messages, JSON
+mm thread <post-id>            # root + last 9 replies (default)
+mm members <ref>               # who's in the channel
+mm pinned <ref>                # pinned posts
+mm user @alice                 # profile + status + timezone
+mm mentions --since 7d         # posts @-mentioning you
+mm search "deployment"         # search across all your teams
+mm watch                       # follow the WebSocket event stream
 ```
 
-## JSON Output
-
-All commands output JSON by default. Key fields:
-
-- **`thread_id`** on every post - pass to `mm thread`
-- **`ref`** on channel entries - pass to `mm messages`
-- **`is_bot`** / **`bot_name`** - webhook/bot posts flagged automatically
-- **`root`** on reply-mentions - the original message being replied to
-- **`reactions`** - emoji counts like `{"+1": 3}`
-
-Webhook posts automatically extract alert content from Slack-format attachments.
-
-Add `--human` for readable markdown output instead.
-
-## Agent Skill
-
-Install as a coding agent skill:
+## Write
 
 ```bash
-npx skills add rhnvrm/mattermost-cli
+mm post <ref> -m "hello"               # new post
+mm reply <post-id> -m "ack"            # threaded reply
+mm dm @alice -m "ping"                 # direct message
+echo "from stdin" | mm post <ref> --read
+
+mm react <post-id> :white_check_mark:  # add reaction
+mm unreact <post-id> :white_check_mark:
+
+mm pin <post-id>
+mm unpin <post-id>
+
+mm edit <post-id> -m "fixed typo"      # only own posts
+mm delete <post-id> --yes              # only own posts; --yes required
+
+mm mark-read <ref>                     # reset unread badges
+
+mm status away                         # online | away | dnd | offline
+mm status online -m "back" --emoji :coffee:
+mm status --clear                      # remove custom status
 ```
 
-## Options
+## JSON shape
 
+Every post returned by `messages`/`thread`/`search`/`mentions` includes:
+
+- `id`, `thread_id`, `is_reply`, `reply_count` (on root posts)
+- `author` (e.g. `@alice`), `message`, `created_at` (ISO 8601 UTC)
+- `channel_id`, `channel` (display name), `team` (where relevant)
+- `file_count`, `files[]` (name + size when available)
+- `reactions` (map: `{":wave:": 2}`)
+
+`unread` / `channels` rows include a `ref` field — the exact string to pass
+to `mm messages <ref>`. Always use `ref`, not raw IDs or display names.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0    | OK |
+| 1    | Generic error |
+| 2    | Auth expired or invalid — run `mm login` |
+| 3    | Rate limited by server |
+
+## Shell completion
+
+```bash
+mm completion bash   > /usr/local/etc/bash_completion.d/mm
+mm completion zsh    > "${fpath[1]}/_mm"
+mm completion fish   > ~/.config/fish/completions/mm.fish
 ```
---human    Human-readable markdown output (default is JSON)
---team     Filter to a specific team
---debug    Enable debug output
+
+Homebrew installs completions automatically.
+
+## Smoke test
+
+Copy `.env.smoke.example` to `.env.smoke` and fill in URL + PAT, then:
+
+```bash
+scripts/smoke.sh          # read-only commands
+scripts/smoke.sh --write  # also exercise post/react/pin/edit/delete
 ```
 
-## Auth
-
-Two methods supported:
-
-**Password + MFA** (primary): `mm login` prompts interactively. Session token
-is stored locally - password is never saved to disk. When the session expires,
-run `mm login` again.
-
-**Personal Access Token** (optional): `mm login --token <pat>`. Requires admin
-to enable PATs on the Mattermost server. Tokens don't expire.
-
-Credentials stored at `~/.config/mm/config.json` (token only, 600 permissions).
-
-Environment variables override config: `MATTERMOST_URL`, `MATTERMOST_TOKEN`,
-`MATTERMOST_TEAM`.
+`.env.smoke` is gitignored.
 
 ## License
 
