@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -19,11 +20,34 @@ import (
 )
 
 const (
-	HealthzPath    = "/healthz"
-	IngestPostPath = "/v1/ingest/post"
+	HealthzPath     = "/healthz"
+	IngestPostPath  = "/v1/ingest/post"
+	SeenPath        = "/v1/seen"
+	LoadHistoryPath = "/v1/load-history"
 
 	dialTimeout = 2 * time.Second
+	// loadHistoryTimeout is generous: paging older history can take several
+	// round-trips against a slow server.
+	loadHistoryTimeout = 60 * time.Second
 )
+
+// SeenRequest advances the agent's processing cursor. ThroughAt is epoch ms;
+// zero means "now" (filled in by the daemon).
+type SeenRequest struct {
+	ThroughAt int64 `json:"through_at"`
+}
+
+// LoadHistoryRequest asks the daemon to fetch older posts for a channel into
+// the cache.
+type LoadHistoryRequest struct {
+	ChannelID string `json:"channel_id"`
+	Limit     int    `json:"limit"`
+}
+
+// LoadHistoryResponse reports how many posts the daemon fetched.
+type LoadHistoryResponse struct {
+	Loaded int `json:"loaded"`
+}
 
 // SocketPath is the daemon's Unix socket path under the cache dir.
 func SocketPath() (string, error) {
@@ -40,9 +64,9 @@ type Healthz struct {
 	BackfillDone bool `json:"backfill_done"`
 }
 
-func unixClient(sock string) *http.Client {
+func unixClient(sock string, timeout time.Duration) *http.Client {
 	return &http.Client{
-		Timeout: dialTimeout,
+		Timeout: timeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
@@ -71,11 +95,70 @@ func NotifyPost(ctx context.Context, p *model.Post) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := unixClient(sock).Do(req)
+	resp, err := unixClient(sock, dialTimeout).Do(req)
 	if err != nil {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// Seen advances the agent's processing cursor via the daemon (the single DB
+// writer). Unlike NotifyPost this is not best-effort: it returns an error when
+// the daemon is unreachable, since the caller needs the cursor persisted.
+func Seen(ctx context.Context, throughAt int64) error {
+	sock, err := SocketPath()
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(SeenRequest{ThroughAt: throughAt})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+SeenPath, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := unixClient(sock, dialTimeout).Do(req)
+	if err != nil {
+		return fmt.Errorf("sync daemon not reachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned %s", resp.Status)
+	}
+	return nil
+}
+
+// LoadHistory asks the daemon to fetch up to limit older posts for a channel
+// into the cache. Returns the number fetched. Requires a running daemon.
+func LoadHistory(ctx context.Context, channelID string, limit int) (int, error) {
+	sock, err := SocketPath()
+	if err != nil {
+		return 0, err
+	}
+	body, err := json.Marshal(LoadHistoryRequest{ChannelID: channelID, Limit: limit})
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+LoadHistoryPath, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := unixClient(sock, loadHistoryTimeout).Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("sync daemon not reachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("daemon returned %s", resp.Status)
+	}
+	var out LoadHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.Loaded, nil
 }
 
 // Health queries the daemon's /healthz. ok is false if the daemon is unreachable.
@@ -88,7 +171,7 @@ func Health(ctx context.Context) (h Healthz, ok bool) {
 	if err != nil {
 		return Healthz{}, false
 	}
-	resp, err := unixClient(sock).Do(req)
+	resp, err := unixClient(sock, dialTimeout).Do(req)
 	if err != nil {
 		return Healthz{}, false
 	}

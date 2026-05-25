@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
@@ -34,6 +35,8 @@ func (d *Daemon) serveIPC(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(ipc.HealthzPath, d.handleHealthz)
 	mux.HandleFunc(ipc.IngestPostPath, d.handleIngestPost)
+	mux.HandleFunc(ipc.SeenPath, d.handleSeen)
+	mux.HandleFunc(ipc.LoadHistoryPath, d.handleLoadHistory)
 	srv := &http.Server{Handler: mux}
 
 	go func() {
@@ -69,6 +72,45 @@ func (d *Daemon) handleIngestPost(w http.ResponseWriter, r *http.Request) {
 		_ = d.ensureUsers(r.Context(), []string{p.UserId})
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d *Daemon) handleSeen(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req ipc.SeenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if req.ThroughAt <= 0 {
+		req.ThroughAt = time.Now().UnixMilli()
+	}
+	if err := store.SetSeenCursor(r.Context(), d.db, store.CursorGlobal, req.ThroughAt); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d *Daemon) handleLoadHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req ipc.LoadHistoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChannelID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	loaded, err := d.LoadHistory(r.Context(), req.ChannelID, req.Limit)
+	if err != nil {
+		_ = store.SetSyncError(r.Context(), d.db, "load history: "+err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	writeIPCJSON(w, ipc.LoadHistoryResponse{Loaded: loaded})
 }
 
 func writeIPCJSON(w http.ResponseWriter, v any) {

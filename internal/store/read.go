@@ -129,6 +129,47 @@ func UsernamesByID(ctx context.Context, db *sql.DB, ids []string) (map[string]st
 	return out, nil
 }
 
+// OldestPostID returns the id of the oldest cached post in a channel, or "" if
+// the channel has no cached posts. Used to page further back via GetPostsBefore.
+func OldestPostID(ctx context.Context, db *sql.DB, channelID string) (string, error) {
+	var id string
+	err := db.QueryRowContext(ctx,
+		`SELECT id FROM posts WHERE channel_id = ? ORDER BY create_at ASC LIMIT 1`,
+		channelID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// CursorGlobal is the scope key for the single global agent processing cursor.
+const CursorGlobal = "global"
+
+// SetSeenCursor records the "processed through" watermark (epoch ms) for a scope.
+func SetSeenCursor(ctx context.Context, ex Execer, scope string, throughAt int64) error {
+	_, err := ex.ExecContext(ctx, `
+		INSERT INTO agent_cursor(scope, seen_through_at) VALUES (?, ?)
+		ON CONFLICT(scope) DO UPDATE SET seen_through_at = excluded.seen_through_at`,
+		scope, throughAt)
+	return err
+}
+
+// GetSeenCursor returns the "processed through" watermark for a scope, or 0.
+func GetSeenCursor(ctx context.Context, db *sql.DB, scope string) (int64, error) {
+	var ts int64
+	err := db.QueryRowContext(ctx, `SELECT seen_through_at FROM agent_cursor WHERE scope = ?`, scope).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return ts, nil
+}
+
 // ChannelByRefLocal resolves a channel id or slug to (id, display_name) from the
 // cache. ok is false when not found (caller falls back to live).
 func ChannelByRefLocal(ctx context.Context, db *sql.DB, id, name string) (string, string, bool) {

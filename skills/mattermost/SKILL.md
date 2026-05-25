@@ -124,6 +124,31 @@ anti-patterns that make sessions slow:
 - escalating `--since` (6h → 1d → 30d → all) → `WHERE create_at > <epoch_ms>`
 - piping output to `grep`/`python` to filter or aggregate → do it in SQL
 
+### Process new messages: `mm new` / `mm seen`
+
+`mm new` lists posts you haven't processed yet — newer than your cursor, across
+all channels, excluding your own posts. Decoupled from Mattermost read/unread:
+querying never marks anything read, and the cursor is *your* processing
+watermark, not a server flag. After reviewing, `mm seen` advances it to now.
+
+```bash
+mm new                 # posts since your cursor (run `mm seen` once to set a baseline)
+mm new --since 1d      # don't look back further than 1d
+mm seen                # record "processed through now"
+```
+
+### Load older history: `mm history`
+
+Backfill keeps only a recent window per channel (sized to cover unread). To pull
+deeper history into the cache so `mm query` / `mm messages` see it locally:
+
+```bash
+mm history <channel> --limit 500
+```
+
+Reading deeper than the window without `mm history` still works — `mm messages`
+falls back to the live API — it just isn't cached.
+
 ## Reading
 
 ```bash

@@ -9,13 +9,15 @@ import (
 )
 
 const (
-	minBackfillPosts = 60
-	maxBackfillPosts = 200
+	minBackfillPosts = 60  // reconcile's shallow per-channel catch-up page size
+	backfillPageSize = 200 // posts API max per_page
+	windowFloorPosts = 100 // backfill at least this many recent posts per channel
+	windowCapPosts   = 500 // ...and at most this many (deeper history via mm history)
 )
 
-// Backfill performs the initial full sync: teams, channels, the user's
-// membership/read-state, and a bounded window of recent posts per channel
-// (enough to cover unread), then the post authors.
+// Backfill performs the initial sync: teams, channels, the user's
+// membership/read-state, a recent window of posts per channel (sized to cover
+// unread), then the post authors. Deeper history is loaded on demand.
 func (d *Daemon) Backfill(ctx context.Context) error {
 	teams, err := retryList(ctx, func() ([]*model.Team, *model.Response, error) {
 		return d.api.GetTeamsForUser(ctx, d.me.Id, "")
@@ -87,15 +89,42 @@ func (d *Daemon) upsertChannelWithName(ctx context.Context, ch *model.Channel) e
 	return store.UpsertChannel(ctx, d.db, ch, dn)
 }
 
+// backfillChannelPosts pulls a recent window of a channel's posts, sized to
+// cover its unread (floor windowFloorPosts, cap windowCapPosts). Deeper history
+// is fetched on demand via mm history. Idempotent upserts make it safe to rerun.
 func (d *Daemon) backfillChannelPosts(ctx context.Context, ch *model.Channel, m model.ChannelMember) ([]string, error) {
-	perPage := clampPerPage(int(ch.TotalMsgCount - m.MsgCount))
-	list, err := retryList(ctx, func() (*model.PostList, *model.Response, error) {
-		return d.api.GetPostsForChannel(ctx, ch.Id, 0, perPage, "", false, false)
-	})
-	if err != nil {
-		return nil, err
+	target := clampWindow(int(ch.TotalMsgCount - m.MsgCount))
+	var authors []string
+	for page := 0; page*backfillPageSize < target; page++ {
+		list, err := retryList(ctx, func() (*model.PostList, *model.Response, error) {
+			return d.api.GetPostsForChannel(ctx, ch.Id, page, backfillPageSize, "", false, false)
+		})
+		if err != nil {
+			return authors, err
+		}
+		if list == nil || len(list.Order) == 0 {
+			break
+		}
+		ids, err := d.ingestPosts(ctx, ch.Id, list)
+		if err != nil {
+			return authors, err
+		}
+		authors = append(authors, ids...)
+		if len(list.Order) < backfillPageSize {
+			break
+		}
 	}
-	return d.ingestPosts(ctx, ch.Id, list)
+	return authors, nil
+}
+
+func clampWindow(unread int) int {
+	if unread < windowFloorPosts {
+		return windowFloorPosts
+	}
+	if unread > windowCapPosts {
+		return windowCapPosts
+	}
+	return unread
 }
 
 // ingestPosts upserts every post in the list, records the channel's synced
@@ -137,14 +166,4 @@ func indexMembers(members model.ChannelMembers) map[string]model.ChannelMember {
 		out[m.ChannelId] = m
 	}
 	return out
-}
-
-func clampPerPage(unread int) int {
-	if unread < minBackfillPosts {
-		return minBackfillPosts
-	}
-	if unread > maxBackfillPosts {
-		return maxBackfillPosts
-	}
-	return unread
 }

@@ -44,6 +44,7 @@ type API interface {
 
 	// Posts.
 	GetPostsForChannel(ctx context.Context, channelID string, page, perPage int, etag string, collapsedThreads, includeDeleted bool) (*model.PostList, *model.Response, error)
+	GetPostsBefore(ctx context.Context, channelID, postID string, page, perPage int, etag string, collapsedThreads, includeDeleted bool) (*model.PostList, *model.Response, error)
 	GetPost(ctx context.Context, postID, etag string) (*model.Post, *model.Response, error)
 	GetPostThread(ctx context.Context, postID, etag string, collapsedThreads bool) (*model.PostList, *model.Response, error)
 	GetPinnedPosts(ctx context.Context, channelID, etag string) (*model.PostList, *model.Response, error)

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -78,24 +79,38 @@ func validateReadOnlySQL(query string) error {
 }
 
 func runQuery(ctx context.Context, query string) error {
+	db, err := openLocalForRead()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return emitQueryRows(ctx, db, query)
+}
+
+// openLocalForRead opens the local cache read-only, with a clear error when no
+// cache exists yet. Used by `mm query` and `mm new`.
+func openLocalForRead() (*sql.DB, error) {
 	path, err := store.DBPath(false)
 	if err != nil {
-		return errs.Errorf(errs.CodeGeneric, "%s", err.Error())
+		return nil, errs.Errorf(errs.CodeGeneric, "%s", err.Error())
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
-		return errs.Errorf(errs.CodeGeneric,
-			"no local cache at %s; run 'mm sync start' first", path)
+		return nil, errs.Errorf(errs.CodeGeneric, "no local cache at %s; run 'mm sync start' first", path)
 	}
 	db, err := store.Open(path, true)
 	if err != nil {
-		return errs.Errorf(errs.CodeGeneric, "open cache: %s", err.Error())
+		return nil, errs.Errorf(errs.CodeGeneric, "open cache: %s", err.Error())
 	}
-	defer db.Close()
+	return db, nil
+}
 
+// emitQueryRows runs query against db and writes the result rows as JSON (or a
+// table with --human), capping at queryRowCap.
+func emitQueryRows(ctx context.Context, db *sql.DB, query string, args ...any) error {
 	qctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
 
-	rows, err := db.QueryContext(qctx, query)
+	rows, err := db.QueryContext(qctx, query, args...)
 	if err != nil {
 		return errs.Errorf(errs.CodeGeneric, "query: %s", err.Error())
 	}

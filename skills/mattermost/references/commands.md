@@ -183,6 +183,10 @@ identical to live) and fall back to the live API otherwise. `MM_NO_DAEMON=1`
 forces the live path; `MM_CACHE_PATH` overrides the cache dir
 (default `os.UserCacheDir()/mm`).
 
+Backfill keeps only a recent window of posts per channel (sized to cover unread);
+unread *counts* are always exact regardless. Pull deeper history into the cache
+on demand with `mm history`.
+
 ### `sync`
 
 Manage the daemon. Not started automatically.
@@ -230,6 +234,43 @@ Freshness: `mm query "SELECT * FROM sync_state"` returns the daemon's heartbeat,
 
 One SQL `SELECT` replaces looping `find-channel` over guessed names, escalating
 `--since`, and piping output to `grep`/`python`.
+
+### `new`
+
+List posts you haven't processed yet — newer than the agent's "seen" cursor,
+across all channels, excluding your own posts. Decoupled from Mattermost
+read/unread (querying never marks anything read; the cursor is your own
+processing watermark).
+
+```
+mm new [--limit 100] [--since 1d]
+```
+
+Output is the `v_post` shape (same as `mm query` over `v_post`). On a fresh
+cache the cursor is 0, so the first `mm new` returns the whole window — run
+`mm seen` once to set a baseline.
+
+### `seen`
+
+Advance the processing cursor (used by `mm new`). Writes go through the daemon,
+so it must be running.
+
+```
+mm seen [--at <epoch-ms>]    # default: now
+```
+
+### `history`
+
+Load older posts for a channel into the cache (backfill only keeps a recent
+window). Pages backwards via the daemon; afterwards `mm query` / `mm messages`
+see the deeper history locally.
+
+```
+mm history <channel-ref> [--limit 500]
+```
+
+Returns `{channel_id, channel, loaded}`. `loaded` is page-granular (rounded up
+to the 200-post page size).
 
 ---
 

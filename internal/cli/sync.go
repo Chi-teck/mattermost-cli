@@ -77,7 +77,7 @@ func syncStartCmd() *cobra.Command {
 			if err := syncd.Spawn(); err != nil {
 				return errs.Errorf(errs.CodeGeneric, "%s", err.Error())
 			}
-			if _, fresh := syncd.WaitFresh(ctx, 8*time.Second); !fresh {
+			if _, fresh := syncd.WaitFresh(ctx, 15*time.Second); !fresh {
 				logPath, _ := syncd.LogPath()
 				return errs.Errorf(errs.CodeGeneric,
 					"daemon spawned but did not report a heartbeat; check %s", logPath)

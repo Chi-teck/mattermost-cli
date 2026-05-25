@@ -16,6 +16,12 @@ var viewsSQL string
 // i+1. Forward-only: never edit a released migration string — append a new one.
 var migrations = []string{
 	schemaSQL + "\n" + viewsSQL,
+	// v2: agent processing cursor ("seen through" watermark), decoupled from
+	// Mattermost read/unread state.
+	`CREATE TABLE agent_cursor (
+		scope           TEXT PRIMARY KEY,
+		seen_through_at INTEGER NOT NULL DEFAULT 0
+	);`,
 }
 
 // SchemaVersion is the latest schema version this build knows how to produce.

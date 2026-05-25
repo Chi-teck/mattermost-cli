@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
@@ -38,6 +39,7 @@ func TestMigrateCreatesSchema(t *testing.T) {
 	for _, name := range []string{
 		"account", "teams", "channels", "channel_members", "users", "statuses",
 		"posts", "posts_fts", "reactions", "files", "channel_cursors", "sync_state",
+		"agent_cursor",
 		"v_channel", "v_unread", "v_post", "v_thread",
 	} {
 		var got string
@@ -218,6 +220,33 @@ func TestFTSTriggers(t *testing.T) {
 		if id == "p1" {
 			t.Fatalf("deleted post still in FTS index: %v", got)
 		}
+	}
+}
+
+func TestSeenCursor(t *testing.T) {
+	db := openTempRW(t)
+	ctx := context.Background()
+
+	got, err := GetSeenCursor(ctx, db, CursorGlobal)
+	if err != nil {
+		t.Fatalf("get (unset): %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("unset cursor = %d, want 0", got)
+	}
+
+	if err := SetSeenCursor(ctx, db, CursorGlobal, 1700000000000); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := SetSeenCursor(ctx, db, CursorGlobal, 1700000005000); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err = GetSeenCursor(ctx, db, CursorGlobal)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got != 1700000005000 {
+		t.Fatalf("cursor = %d, want 1700000005000", got)
 	}
 }
 
