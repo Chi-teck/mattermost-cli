@@ -174,6 +174,13 @@ Always check the exit code before assuming a write succeeded.
 - **Don't spam reactions or messages on retries.** If a write command's exit
   code is non-zero, check whether it actually went through (e.g. re-fetch
   the channel) before re-running.
+- **Always inspect attachments.** A post text alone is often not the full
+  message — screenshots, logs, PDFs, and design files carry the actual
+  context. Whenever a post has `file_count > 0`, pull each entry from
+  `files[]` with `mm download <id>` and open it (image viewer for screenshots,
+  read for text/logs, pass to the appropriate tool for other formats) before
+  responding or summarizing. Treating a post as understood without looking at
+  its attachments is a frequent failure mode.
 
 ## Further reading
 
