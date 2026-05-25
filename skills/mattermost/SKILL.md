@@ -114,6 +114,10 @@ mm delete <post_id> --yes                  # only own posts; --yes is required
 
 mm mark-read <ref>                         # clear unread badge
 
+mm create-channel <name> --type public      # new channel (--type public|private)
+mm create-channel <name> --team eng --purpose "..." --header "..."
+mm add-user <ref> @username                 # add a user to a channel
+
 mm status away
 mm status online -m "back at it" --emoji :coffee:
 mm status --clear                          # remove custom status

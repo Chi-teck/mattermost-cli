@@ -204,6 +204,32 @@ Reset the unread badge on a channel.
 mm mark-read <ref>
 ```
 
+### `create-channel`
+
+Create a new public or private channel in a team.
+
+```
+mm create-channel <name> [--type public|private] [--team <name|id>] \
+                        [--display-name "<text>"] [--purpose "<text>"] [--header "<text>"]
+```
+
+- `<name>` — URL-safe channel name (lowercased automatically)
+- `--type` — `public` (default) or `private`
+- `--team` — required if you belong to more than one team; matches by ID, name, or display name
+- `--display-name` — pretty name shown in the UI; defaults to `<name>`
+
+Returns `{id, name, display_name, type, team, team_id, purpose, header}`.
+
+### `add-user`
+
+Add a user to a channel.
+
+```
+mm add-user <ref> @username
+```
+
+Returns the resulting `{channel_id, channel, user_id, user, roles}`.
+
 ### `status`
 
 ```
