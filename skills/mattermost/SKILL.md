@@ -92,6 +92,7 @@ mm channels --type dm --since 6h
 mm pinned <ref>
 mm members <ref>
 mm user @someone
+mm download <file-id>            # save attachment to cwd; --output -, --force
 mm watch                         # follow the WebSocket event stream
 ```
 
@@ -146,7 +147,7 @@ chain (e.g. take the `id` from `mm post` and feed it into `mm pin`).
 | `is_reply` / `reply_count` | Thread structure |
 | `reactions` | Emoji counts like `{":+1:": 3, ":white_check_mark:": 1}` |
 | `created_at` | ISO 8601 UTC |
-| `file_count` / `files[]` | Attachments (name + size when the server returns them) |
+| `file_count` / `files[]` | Attachments. Each entry has `id`, `name`, `size`, `mime_type`, `extension`, and `width`/`height` for images. Pass `id` to `mm download`. |
 
 Bot posts from webhooks have alert content extracted from Slack-format
 attachments, so you see actual alert text, not empty messages.

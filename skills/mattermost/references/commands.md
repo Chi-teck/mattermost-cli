@@ -154,6 +154,23 @@ mm watch
 
 Ctrl-C to stop.
 
+### `download`
+
+Fetch a file attached to a Mattermost post. File IDs come from the `files[].id`
+field returned by `mm messages` / `mm thread` / `mm mentions` / `mm search`.
+
+```
+mm download <file-id>                         # save to cwd using original name
+mm download <file-id> --output path/dir/      # save into a directory
+mm download <file-id> --output ./renamed.png  # save under an explicit name
+mm download <file-id> --output -              # stream raw bytes to stdout
+mm download <file-id> --force                 # overwrite an existing file
+```
+
+JSON output (when not streaming): `{id, name, size, mime_type, extension,
+width, height, path}`. Refuses to overwrite an existing path unless `--force`
+is passed.
+
 ---
 
 ## Write commands
