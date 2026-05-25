@@ -71,9 +71,17 @@ func ISOms(epochMS int64) string {
 }
 
 // FileEntry mirrors the `files` array element in enriched post JSON.
+//
+// `id`, `mime_type`, `extension` are exposed so agents can pipe attachments
+// straight into `mm download <id>`.
 type FileEntry struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+	MimeType  string `json:"mime_type,omitempty"`
+	Extension string `json:"extension,omitempty"`
+	Width     int    `json:"width,omitempty"`
+	Height    int    `json:"height,omitempty"`
 }
 
 // EnrichedPost is the JSON-serializable enrichment of a *model.Post.
@@ -130,7 +138,15 @@ func EnrichPost(p *model.Post, author, channelName, teamName string) EnrichedPos
 			if f == nil {
 				continue
 			}
-			out.Files = append(out.Files, FileEntry{Name: f.Name, Size: f.Size})
+			out.Files = append(out.Files, FileEntry{
+				ID:        f.Id,
+				Name:      f.Name,
+				Size:      f.Size,
+				MimeType:  f.MimeType,
+				Extension: f.Extension,
+				Width:     f.Width,
+				Height:    f.Height,
+			})
 		}
 	}
 	// Bot / webhook detection + attachment text fallback.
