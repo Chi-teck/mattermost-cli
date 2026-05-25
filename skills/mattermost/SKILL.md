@@ -84,6 +84,9 @@ mm thread <thread_id>            # root + last 9 replies
 mm thread <thread_id> --limit 0  # entire thread
 mm mentions --since 3d
 mm search "from:alice deploy after:2025-01-01"
+mm find-channel <term>           # search your teams' channels by name/purpose
+mm find-channel <term> --type public
+mm search-user <term>            # users by username, full name, nickname, email
 mm channel <ref>                 # purpose, header, member/pinned counts
 mm channels --type dm --since 6h
 mm pinned <ref>
@@ -117,6 +120,7 @@ mm mark-read <ref>                         # clear unread badge
 mm create-channel <name> --type public      # new channel (--type public|private)
 mm create-channel <name> --team eng --purpose "..." --header "..."
 mm add-user <ref> @username                 # add a user to a channel
+mm join <channel>                           # join a public channel yourself
 
 mm status away
 mm status online -m "back at it" --emoji :coffee:

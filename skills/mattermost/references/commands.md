@@ -69,6 +69,30 @@ mm search "<query>" [--limit 30]
 Supports Mattermost search modifiers: `from:user`, `in:channel`,
 `before:`, `after:`, `on:` with `YYYY-MM-DD` dates.
 
+### `find-channel`
+
+Search channels you have access to (public + private you're already in).
+Matches on channel name, display name, purpose, and header.
+
+```
+mm find-channel <term> [--team <name|id>] [--type any|public|private] [--limit 50]
+```
+
+Returns rows of `{id, name, display_name, type, purpose, header, team, team_id, ref}`.
+Pass `ref` directly to `mm messages` or `mm join`.
+
+### `search-user`
+
+Fuzzy lookup for users. Use this when you don't know the exact username —
+matches username, full name, nickname, and email fragments.
+
+```
+mm search-user <term> [--team <name|id>] [--limit 25] [--include-inactive]
+```
+
+Returns rows of `{id, username, full_name, nickname, position, email, ref, is_bot, deleted}`.
+The leading `@` on `<term>` is stripped automatically.
+
 ### `channel`
 
 Single-channel summary.
@@ -229,6 +253,18 @@ mm add-user <ref> @username
 ```
 
 Returns the resulting `{channel_id, channel, user_id, user, roles}`.
+
+### `join`
+
+Join a public channel yourself. For private channels, ask an existing
+member to invite you via `mm add-user`.
+
+```
+mm join <channel-ref> [--team <name|id>]
+```
+
+`--team` is needed only when the same channel name exists in more than one
+of your teams. Returns `{channel_id, channel, channel_name, team_id, type, roles}`.
 
 ### `status`
 
