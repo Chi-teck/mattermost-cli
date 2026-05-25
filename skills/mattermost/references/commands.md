@@ -173,6 +173,66 @@ is passed.
 
 ---
 
+## Local cache commands
+
+A background daemon mirrors Mattermost into a local SQLite cache and keeps it
+live over the WebSocket. `mm query` reads that cache with SQL (instant, no
+network). When the daemon is running and its backfill is complete, `find-channel`,
+`unread`, `channels`, and `messages` answer from the cache automatically (output
+identical to live) and fall back to the live API otherwise. `MM_NO_DAEMON=1`
+forces the live path; `MM_CACHE_PATH` overrides the cache dir
+(default `os.UserCacheDir()/mm`).
+
+### `sync`
+
+Manage the daemon. Not started automatically.
+
+```
+mm sync start     # backfill, then realtime-sync in the background (no-op if already running)
+mm sync status    # {running, ipc_reachable, ws_connected, backfill_done, heartbeat_age_ms, ...}
+mm sync stop      # SIGTERM + WAL checkpoint
+mm sync logs      # daemon log path + tail
+```
+
+`status` is how you check freshness before trusting `mm query` results.
+
+### `query`
+
+Run a read-only SQL statement against the local cache and return JSON rows
+(`--human` for a table). Only `SELECT` / `WITH` / `EXPLAIN` are allowed;
+`ATTACH`, `PRAGMA` writes, and any mutation are rejected. Row cap 5000,
+statement timeout 10s.
+
+```
+mm query "<SQL>"
+mm query --schema    # print table/view definitions (discover the surface)
+```
+
+Enriched views (the contract — prefer these over raw tables):
+- `v_post` — `id, thread_id, is_reply, author, message, created_at, channel_id,
+  channel, team, file_count, reply_count, is_bot, bot_name, reactions (JSON),
+  files (JSON), root_id, user_id, create_at, delete_at`
+- `v_channel` — `id, name, display_name, type, team, purpose, header,
+  total_msg_count, last_post_at, ...`
+- `v_unread` — `id, name, display_name, type, team, unread_count, mention_count,
+  last_post_at, last_post_at_iso`
+- `v_thread` — posts grouped by `thread_id`
+
+Full-text search over message text (FTS5):
+```
+mm query "SELECT p.id, p.message FROM posts p
+          JOIN posts_fts f ON p.rowid = f.rowid
+          WHERE posts_fts MATCH 'deploy' LIMIT 20"
+```
+
+Freshness: `mm query "SELECT * FROM sync_state"` returns the daemon's heartbeat,
+`ws_connected`, `backfill_done`, and last reconcile time.
+
+One SQL `SELECT` replaces looping `find-channel` over guessed names, escalating
+`--since`, and piping output to `grep`/`python`.
+
+---
+
 ## Write commands
 
 All write commands return the created/updated resource as JSON.
