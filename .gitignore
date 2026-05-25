@@ -10,3 +10,9 @@ build/
 venv/
 .tox/
 .pytest_cache/
+
+# Go
+/mm
+/mm-*
+dist/
+bin/
