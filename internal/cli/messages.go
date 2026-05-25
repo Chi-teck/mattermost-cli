@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 
 	mmformat "github.com/ayusavin/mattermost-cli/internal/format"
 	"github.com/ayusavin/mattermost-cli/internal/resolve"
+	"github.com/ayusavin/mattermost-cli/internal/store"
 	"github.com/ayusavin/mattermost-cli/internal/timeparse"
 )
 
@@ -48,6 +50,17 @@ func newMessagesCmd() *cobra.Command {
 }
 
 func runMessages(ctx context.Context, channelRef string, limit int, sinceExpr string, includeDeleted bool) error {
+	if db, ok := openFreshLocalCache(ctx); ok {
+		handled, lerr := messagesLocal(ctx, db, channelRef, limit, sinceExpr, includeDeleted)
+		_ = db.Close()
+		if lerr != nil {
+			return lerr
+		}
+		if handled {
+			return nil
+		}
+		// cache can't fully cover the request — fall through to the live API
+	}
 	c, err := LoadContext(ctx)
 	if err != nil {
 		return err
@@ -97,9 +110,98 @@ func runMessages(ctx context.Context, channelRef string, limit int, sinceExpr st
 	return writeJSON(os.Stdout, enrichPosts(posts, usernames, channelName))
 }
 
+// messagesLocal answers `messages` from the cache when it can fully cover the
+// request, producing byte-identical output via the shared selectRecentMessages /
+// enrichPosts path. Returns handled=false to fall back to the live API for: DMs
+// addressed by @user, channels not cached, include-deleted, unbounded limit, a
+// time window older than the cache holds, or any author not cached locally.
+func messagesLocal(ctx context.Context, db *sql.DB, channelRef string, limit int, sinceExpr string, includeDeleted bool) (bool, error) {
+	if includeDeleted {
+		return false, nil
+	}
+	bare := strings.TrimPrefix(channelRef, "~")
+	if strings.HasPrefix(bare, "@") {
+		return false, nil // DM by @user — let the live path resolve it
+	}
+	var id, name string
+	if channelIDRE.MatchString(bare) {
+		id = bare
+	} else {
+		name = bare
+	}
+	chID, channelName, ok := store.ChannelByRefLocal(ctx, db, id, name)
+	if !ok {
+		return false, nil
+	}
+
+	var sinceMS int64
+	if sinceExpr != "" {
+		ms, err := timeparse.Parse(sinceExpr, time.Now())
+		if err != nil {
+			return false, nil // let the live path report the parse error
+		}
+		sinceMS = ms
+	}
+
+	posts, oldest, err := store.ChannelPosts(ctx, db, chID, false)
+	if err != nil {
+		return false, nil
+	}
+
+	// Only answer locally when the cache certainly holds the full requested set.
+	covered := false
+	switch {
+	case sinceMS > 0:
+		covered = oldest > 0 && oldest <= sinceMS
+	case limit > 0:
+		covered = len(posts) >= limit
+	}
+	if !covered {
+		return false, nil
+	}
+
+	sel := selectRecentMessages(posts, sinceMS, limit)
+	ids := messageAuthorIDs(sel)
+	usernames, err := store.UsernamesByID(ctx, db, ids)
+	if err != nil {
+		return false, nil
+	}
+	for _, uid := range ids {
+		if usernames[uid] == "" {
+			return false, nil // an author isn't cached — fall back so authors match
+		}
+	}
+
+	if Globals.Human {
+		fmt.Fprintln(os.Stdout, renderPostsMarkdown(sel, usernames))
+		return true, nil
+	}
+	if err := writeJSON(os.Stdout, enrichPosts(sel, usernames, channelName)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func messageAuthorIDs(posts []*model.Post) []string {
+	seen := make(map[string]struct{}, len(posts))
+	ids := make([]string, 0, len(posts))
+	for _, p := range posts {
+		if p == nil || p.UserId == "" {
+			continue
+		}
+		if _, ok := seen[p.UserId]; ok {
+			continue
+		}
+		seen[p.UserId] = struct{}{}
+		ids = append(ids, p.UserId)
+	}
+	return ids
+}
+
 func resolveMessagesChannel(ctx context.Context, resolver *resolve.Resolver, api interface {
 	GetTeamsForUser(context.Context, string, string) ([]*model.Team, *model.Response, error)
-}, userID, ref string) (*model.Channel, error) {
+}, userID, ref string,
+) (*model.Channel, error) {
 	if channelIDRE.MatchString(ref) {
 		return resolver.ResolveChannelByID(ctx, ref)
 	}
