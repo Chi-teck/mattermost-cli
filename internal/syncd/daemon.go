@@ -77,6 +77,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	go d.heartbeatLoop(ctx)
+	go d.serveIPC(ctx) // control socket up early so write commands can ingest during backfill
 
 	if err := d.Backfill(ctx); err != nil {
 		_ = store.SetSyncError(ctx, d.db, "backfill: "+err.Error())

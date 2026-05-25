@@ -8,6 +8,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
 
+	"github.com/ayusavin/mattermost-cli/internal/ipc"
 	"github.com/ayusavin/mattermost-cli/internal/resolve"
 )
 
@@ -59,6 +60,7 @@ func runPost(ctx context.Context, channelRef, message string) error {
 	if err != nil {
 		return classifyOrWrap(err)
 	}
+	ipc.NotifyPost(ctx, created) // best-effort: immediate read-your-writes via the daemon
 	channelName, _ := resolver.FormatChannelDisplayName(ctx, ch)
 	usernames, _ := resolver.UsernamesOf(ctx, []string{created.UserId})
 	if Globals.Human {

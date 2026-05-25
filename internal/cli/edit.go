@@ -8,6 +8,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
 
+	"github.com/ayusavin/mattermost-cli/internal/ipc"
 	"github.com/ayusavin/mattermost-cli/internal/resolve"
 )
 
@@ -67,6 +68,7 @@ func runEdit(ctx context.Context, postRef, message string) error {
 	if err != nil {
 		return classifyOrWrap(err)
 	}
+	ipc.NotifyPost(ctx, out) // best-effort: immediate read-your-writes via the daemon
 	resolver := resolve.New(c.Client, c.Me.Id)
 	channelName := ""
 	if ch, err := resolver.ResolveChannelByID(ctx, out.ChannelId); err == nil {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"sort"
@@ -55,6 +56,20 @@ func runFindChannel(ctx context.Context, term, teamRef, channelType string, limi
 		return fmt.Errorf("invalid --type %q: expected any, public, or private", channelType)
 	}
 
+	// Local-first: when the sync daemon keeps a fresh cache, answer from SQLite
+	// (one indexed query, no network), which kills the per-team SearchChannels
+	// fan-out. Fall back to live when the cache is empty for the term, errors, or
+	// no daemon is running. Note: the cache only holds channels the user is a
+	// member of, so empty local results fall through to live to also surface
+	// public channels the user hasn't joined.
+	if db, ok := openFreshLocalCache(ctx); ok {
+		rows, err := findChannelLocal(ctx, db, term, teamRef, wantPublic, wantPrivate, limit)
+		_ = db.Close()
+		if err == nil && len(rows) > 0 {
+			return writeFindChannelRows(rows, term)
+		}
+	}
+
 	c, err := LoadContext(ctx)
 	if err != nil {
 		return err
@@ -102,6 +117,12 @@ func runFindChannel(ctx context.Context, term, teamRef, channelType string, limi
 		}
 	}
 
+	return writeFindChannelRows(rows, term)
+}
+
+// writeFindChannelRows renders find-channel results identically for the local
+// and live paths: sorted by name, JSON by default, plain lines with --human.
+func writeFindChannelRows(rows []map[string]any, term string) error {
 	sort.SliceStable(rows, func(i, j int) bool {
 		return rows[i]["name"].(string) < rows[j]["name"].(string)
 	})
@@ -117,6 +138,75 @@ func runFindChannel(ctx context.Context, term, teamRef, channelType string, limi
 		return nil
 	}
 	return writeJSON(os.Stdout, rows)
+}
+
+// findChannelLocal searches the local cache (joined channels only) by name,
+// display name, purpose, and header, mirroring the live command's output shape.
+func findChannelLocal(ctx context.Context, db *sql.DB, term, teamRef string, wantPublic, wantPrivate bool, limit int) ([]map[string]any, error) {
+	typeClause := "c.type IN ('O','P')"
+	switch {
+	case wantPublic && !wantPrivate:
+		typeClause = "c.type = 'O'"
+	case wantPrivate && !wantPublic:
+		typeClause = "c.type = 'P'"
+	}
+
+	if teamRef == "" {
+		teamRef = Globals.Team
+	}
+	args := []any{}
+	teamClause := ""
+	if teamRef != "" {
+		var teamID string
+		err := db.QueryRowContext(ctx,
+			`SELECT id FROM teams WHERE id=? OR name=? OR display_name=? LIMIT 1`,
+			teamRef, teamRef, teamRef).Scan(&teamID)
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("team %q not found among your memberships", teamRef)
+		}
+		if err != nil {
+			return nil, err
+		}
+		teamClause = " AND c.team_id = ?"
+		args = append(args, teamID)
+	}
+
+	like := "%" + strings.ToLower(term) + "%"
+	query := `SELECT c.id, c.name, c.display_name, c.type, c.purpose, c.header, c.team_id, COALESCE(t.name,'')
+		FROM channels c LEFT JOIN teams t ON t.id = c.team_id
+		WHERE c.delete_at = 0 AND ` + typeClause + `
+			AND (lower(c.name) LIKE ? OR lower(c.display_name) LIKE ? OR lower(c.purpose) LIKE ? OR lower(c.header) LIKE ?)`
+	args = append(args, like, like, like, like)
+	query += teamClause + ` ORDER BY c.name`
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, name, displayName, typ, purpose, header, teamID, teamName string
+		if err := rows.Scan(&id, &name, &displayName, &typ, &purpose, &header, &teamID, &teamName); err != nil {
+			return nil, err
+		}
+		out = append(out, map[string]any{
+			"id":           id,
+			"name":         name,
+			"display_name": displayName,
+			"type":         channelTypeLabel(model.ChannelType(typ)),
+			"purpose":      purpose,
+			"header":       header,
+			"team_id":      teamID,
+			"team":         teamName,
+			"ref":          name,
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, rows.Err()
 }
 
 // selectTeams returns the teams to search in. If teamRef is empty, returns all

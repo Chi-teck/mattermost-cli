@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ayusavin/mattermost-cli/internal/errs"
+	"github.com/ayusavin/mattermost-cli/internal/ipc"
 	"github.com/ayusavin/mattermost-cli/internal/syncd"
 )
 
@@ -70,7 +71,7 @@ func syncStartCmd() *cobra.Command {
 		Short: "Start the sync daemon (no-op if already running)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmdContext(cmd)
-			if s, exists, err := syncd.ReadState(ctx); err == nil && exists && syncd.HeartbeatFresh(s) {
+			if s, exists, err := syncd.ReadState(ctx); err == nil && exists && syncd.Running(s) {
 				return emitSyncStatus(ctx, "already running")
 			}
 			if err := syncd.Spawn(); err != nil {
@@ -98,7 +99,7 @@ func syncStopCmd() *cobra.Command {
 			case err != nil:
 				return errs.Errorf(errs.CodeGeneric, "%s", err.Error())
 			default:
-				return writeSyncMessage("stopped", true)
+				return writeSyncMessage("stopped", false)
 			}
 		},
 	}
@@ -142,6 +143,7 @@ type syncStatusOut struct {
 	Status             string `json:"status,omitempty"`
 	Running            bool   `json:"running"`
 	PID                int64  `json:"pid,omitempty"`
+	IPCReachable       bool   `json:"ipc_reachable"`
 	WSConnected        bool   `json:"ws_connected"`
 	BackfillDone       bool   `json:"backfill_done"`
 	HeartbeatAgeMs     int64  `json:"heartbeat_age_ms,omitempty"`
@@ -157,11 +159,13 @@ func emitSyncStatus(ctx context.Context, status string) error {
 	if err != nil {
 		return errs.Errorf(errs.CodeGeneric, "%s", err.Error())
 	}
-	running := exists && syncd.HeartbeatFresh(s)
+	running := exists && syncd.Running(s)
+	_, ipcOK := ipc.Health(ctx)
 	out := syncStatusOut{
 		Status:       status,
 		Running:      running,
 		PID:          s.DaemonPID,
+		IPCReachable: ipcOK,
 		WSConnected:  s.WSConnected,
 		BackfillDone: s.BackfillDone,
 		ServerURL:    s.ServerURL,

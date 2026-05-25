@@ -71,6 +71,13 @@ func HeartbeatFresh(s store.SyncState) bool {
 	return age >= 0 && age < heartbeatStale
 }
 
+// Running reports whether a daemon is actually live: a fresh heartbeat alone is
+// not enough, because a just-killed daemon's last heartbeat is still recent —
+// the process must also exist.
+func Running(s store.SyncState) bool {
+	return HeartbeatFresh(s) && processAlive(int(s.DaemonPID))
+}
+
 // ReadState opens the store read-only and returns the daemon row. exists is
 // false when no database has been created yet (daemon never ran).
 func ReadState(ctx context.Context) (state store.SyncState, exists bool, err error) {
@@ -150,7 +157,7 @@ func Stop(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if !exists || !HeartbeatFresh(s) || !processAlive(int(s.DaemonPID)) {
+	if !exists || !Running(s) {
 		return ErrNotRunning
 	}
 	if err := unix.Kill(int(s.DaemonPID), unix.SIGTERM); err != nil {
