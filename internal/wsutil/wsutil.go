@@ -5,11 +5,14 @@
 package wsutil
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -37,6 +40,41 @@ func Connect(rawURL, token string) (*model.WebSocketClient, error) {
 
 func drainResponses(ch <-chan *model.WebSocketResponse) {
 	for range ch {
+	}
+}
+
+// Connections yields live WebSocket connections, re-dialing after each one
+// drops and waiting delay between attempts, until ctx is done or the caller
+// stops ranging. A failed dial yields (nil, err) so the caller can report it
+// and the retry continues — the sequence never ends by itself, which is what a
+// long-lived listener wants. Each connection is closed once the loop body
+// returns, so the caller must not use it afterwards.
+func Connections(ctx context.Context, rawURL, token string, delay time.Duration) iter.Seq2[*model.WebSocketClient, error] {
+	return func(yield func(*model.WebSocketClient, error) bool) {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			c, err := Connect(rawURL, token)
+			if err != nil {
+				if !yield(nil, err) {
+					return
+				}
+			} else {
+				more := yield(c, nil)
+				c.Close()
+				if !more {
+					return
+				}
+			}
+			t := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				t.Stop()
+				return
+			case <-t.C:
+			}
+		}
 	}
 }
 

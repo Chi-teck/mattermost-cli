@@ -88,39 +88,20 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 
 	channelSet := stringSet(channels)
 	received := 0
-	var timer *time.Timer
-	var inactivity <-chan time.Time
-	if timeout > 0 {
-		timer = time.NewTimer(timeout)
-		defer timer.Stop()
-		inactivity = timer.C
-	}
-	resetTimer := func() {
-		if timer == nil {
-			return
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(timeout)
-	}
 
-	// wait blocks for d, reporting whether watching should continue. The
-	// inactivity timeout keeps running while we are disconnected — an outage is
-	// silence too.
-	wait := func(d time.Duration) bool {
-		t := time.NewTimer(d)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return false
-		case <-inactivity:
-			return false
-		case <-t.C:
-			return true
+	// --timeout cancels the whole stream rather than just the current
+	// connection, so silence counts while we are disconnected too. AfterFunc is
+	// what makes that cheap: rearming on each emitted event is a plain Reset.
+	streamCtx, stopStream := context.WithCancel(ctx)
+	defer stopStream()
+	var idle *time.Timer
+	if timeout > 0 {
+		idle = time.AfterFunc(timeout, stopStream)
+		defer idle.Stop()
+	}
+	resetIdle := func() {
+		if idle != nil {
+			idle.Reset(timeout)
 		}
 	}
 
@@ -130,9 +111,7 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 	consume := func(client *model.WebSocketClient) (bool, error) {
 		for {
 			select {
-			case <-ctx.Done():
-				return true, nil
-			case <-inactivity:
+			case <-streamCtx.Done():
 				return true, nil
 			case <-client.PingTimeoutChannel:
 				fmt.Fprintln(os.Stderr, "warning: websocket ping timed out; reconnecting")
@@ -162,7 +141,7 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 				if err := out.Flush(); err != nil {
 					return true, errs.Errorf(errs.CodeGeneric, "flush event: %s", err.Error())
 				}
-				resetTimer()
+				resetIdle()
 				received++
 				if limit > 0 && received >= limit {
 					return true, nil
@@ -171,32 +150,20 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 		}
 	}
 
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		client, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
+	for client, err := range wsutil.Connections(streamCtx, lc.Cfg.URL, lc.Cfg.Token, reconnectDelay) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: connect websocket: %s; retrying in %s\n", err.Error(), reconnectDelay)
-			if !wait(reconnectDelay) {
-				return nil
-			}
 			continue
 		}
-		resetTimer()
-
 		done, err := consume(client)
-		client.Close()
 		if err != nil {
 			return err
 		}
 		if done {
 			return nil
 		}
-		if !wait(reconnectDelay) {
-			return nil
-		}
 	}
+	return nil
 }
 
 // eventActorID returns the id of the user who caused the event. Post and

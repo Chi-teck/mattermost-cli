@@ -130,17 +130,10 @@ func (d *Daemon) reconcileLoop(ctx context.Context) {
 // reconnects (with a short delay) until ctx is cancelled. A reconcile runs on
 // every (re)connect to close any gap accumulated while disconnected.
 func (d *Daemon) webSocketLoop(ctx context.Context) error {
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		ws, err := wsutil.Connect(d.cfg.URL, d.cfg.Token)
+	for ws, err := range wsutil.Connections(ctx, d.cfg.URL, d.cfg.Token, reconnectDelay) {
 		if err != nil {
 			_ = store.SetWSConnected(ctx, d.db, false)
 			_ = store.SetSyncError(ctx, d.db, "ws connect: "+err.Error())
-			if !sleep(ctx, reconnectDelay) {
-				return nil
-			}
 			continue
 		}
 		_ = store.SetWSConnected(ctx, d.db, true)
@@ -150,13 +143,9 @@ func (d *Daemon) webSocketLoop(ctx context.Context) error {
 		}
 
 		d.consume(ctx, ws)
-		ws.Close()
 		_ = store.SetWSConnected(ctx, d.db, false)
-
-		if !sleep(ctx, reconnectDelay) {
-			return nil
-		}
 	}
+	return nil
 }
 
 func (d *Daemon) consume(ctx context.Context, ws *model.WebSocketClient) {
