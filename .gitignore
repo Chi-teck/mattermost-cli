@@ -10,3 +10,8 @@
 
 # Smoke-test local creds
 /.env.smoke
+
+/local/
+/.claude/
+/.opencode/
+/AGENTS.md
