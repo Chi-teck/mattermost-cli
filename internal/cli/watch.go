@@ -57,12 +57,18 @@ func newWatchCmd() *cobra.Command {
 	return cmd
 }
 
+// watchEventLine is one line of `mm watch` output. UserID is the broadcast
+// scope and is empty for post events; ActorID and Post are the decoded
+// convenience fields consumers should prefer. Data keeps the raw payload,
+// nested JSON strings and all, so existing consumers keep working.
 type watchEventLine struct {
 	Type      string         `json:"type"`
 	Timestamp string         `json:"timestamp"`
 	ChannelID string         `json:"channel_id"`
 	TeamID    string         `json:"team_id"`
 	UserID    string         `json:"user_id"`
+	ActorID   string         `json:"actor_id,omitempty"`
+	Post      *model.Post    `json:"post,omitempty"`
 	Data      map[string]any `json:"data"`
 }
 
@@ -214,8 +220,26 @@ func formatWatchEventJSON(ev *model.WebSocketEvent, data map[string]any, ts time
 		ChannelID: wsutil.ChannelID(ev),
 		TeamID:    wsutil.TeamID(ev),
 		UserID:    wsutil.UserID(ev),
+		ActorID:   eventActorID(ev, data),
+		Post:      extractPostPayload(data),
 		Data:      data,
 	}
+}
+
+// extractPostPayload decodes data["post"] into a real post so consumers can read
+// .post.root_id or .post.message without parsing the nested JSON string
+// Mattermost sends. Returns nil when the event carries no post.
+func extractPostPayload(data map[string]any) *model.Post {
+	raw, ok := data["post"]
+	if !ok {
+		return nil
+	}
+	var post model.Post
+	wsutil.DecodePayload(raw, &post)
+	if post.Id == "" {
+		return nil
+	}
+	return &post
 }
 
 func formatWatchEventHuman(ev *model.WebSocketEvent, data map[string]any, ts time.Time) string {

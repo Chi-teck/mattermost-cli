@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 
@@ -81,6 +84,65 @@ func TestEventActorID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFormatWatchEventJSON(t *testing.T) {
+	ts := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+
+	t.Run("post as json string", func(t *testing.T) {
+		ev := model.NewWebSocketEvent(model.WebsocketEventPosted, "team1", "chan1", "", nil, "").
+			SetData(map[string]any{"post": `{"id":"p1","user_id":"author1","channel_id":"chan1","root_id":"r1","message":"hi"}`})
+		line := formatWatchEventJSON(ev, wsutil.EventData(ev), ts)
+
+		if line.ActorID != "author1" {
+			t.Fatalf("ActorID = %q, want %q", line.ActorID, "author1")
+		}
+		if line.Post == nil {
+			t.Fatalf("Post = nil, want a decoded post")
+		}
+		if line.Post.Id != "p1" || line.Post.RootId != "r1" || line.Post.Message != "hi" {
+			t.Fatalf("Post = %+v, want id p1 / root r1 / message hi", line.Post)
+		}
+		if line.UserID != "" {
+			t.Fatalf("UserID = %q, want empty broadcast scope to be preserved", line.UserID)
+		}
+		if _, ok := line.Data["post"]; !ok {
+			t.Fatalf("Data lost the raw post payload: %+v", line.Data)
+		}
+	})
+
+	t.Run("post as object", func(t *testing.T) {
+		ev := model.NewWebSocketEvent(model.WebsocketEventPosted, "team1", "chan1", "", nil, "").
+			SetData(map[string]any{"post": map[string]any{"id": "p2", "user_id": "author2", "message": "yo"}})
+		line := formatWatchEventJSON(ev, wsutil.EventData(ev), ts)
+
+		if line.Post == nil || line.Post.Id != "p2" || line.Post.Message != "yo" {
+			t.Fatalf("Post = %+v, want id p2 / message yo", line.Post)
+		}
+		if line.ActorID != "author2" {
+			t.Fatalf("ActorID = %q, want %q", line.ActorID, "author2")
+		}
+	})
+
+	t.Run("event without a post omits the field", func(t *testing.T) {
+		ev := model.NewWebSocketEvent(model.WebsocketEventStatusChange, "", "", "user9", nil, "").
+			SetData(map[string]any{"status": "online"})
+		line := formatWatchEventJSON(ev, wsutil.EventData(ev), ts)
+
+		if line.Post != nil {
+			t.Fatalf("Post = %+v, want nil", line.Post)
+		}
+		encoded, err := json.Marshal(line)
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		if strings.Contains(string(encoded), `"post"`) {
+			t.Fatalf("omitempty failed, line still carries a post key: %s", encoded)
+		}
+		if line.ActorID != "user9" {
+			t.Fatalf("ActorID = %q, want %q", line.ActorID, "user9")
+		}
+	})
 }
 
 // The broadcast scope of a `posted` event carries no user id, so a self-filter

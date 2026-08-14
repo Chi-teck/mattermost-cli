@@ -168,6 +168,27 @@ Ctrl-C, `--limit`, or `--timeout`; bound it with one of those rather than
 relying on the connection dying. `--timeout` measures silence, so it fires
 during an outage too.
 
+One JSON object per line:
+
+```json
+{
+  "type": "posted",
+  "timestamp": "2026-02-03T04:05:06Z",
+  "channel_id": "...",
+  "team_id": "...",
+  "user_id": "",
+  "actor_id": "...",
+  "post": {"id": "...", "user_id": "...", "root_id": "", "message": "..."},
+  "data": {"post": "{\"id\":\"...\"}", "sender_name": "@alice"}
+}
+```
+
+Read `actor_id` for who caused the event and `post` for the post itself.
+`user_id` is the event's broadcast scope and is **empty for post events** — it
+is kept only for backward compatibility. `post` and `actor_id` are omitted when
+the event carries no post / no identifiable actor. `data` is the raw Mattermost
+payload, in which `post` and `reaction` are nested JSON *strings*.
+
 Ctrl-C to stop.
 
 ### `download`
