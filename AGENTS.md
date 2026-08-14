@@ -64,7 +64,9 @@ scripts/smoke.sh              # end-to-end smoke against a live server
    markdown render. Write commands return the created/updated resource so
    agents can chain.
 6. Use `--message` + `--read` (stdin) for any command that takes free text.
-   See `internal/cli/m2_input.go::readMessageInput`.
+   See `internal/cli/m2_input.go::readMessageInput`. Commands that create a
+   post go through `internal/cli/attach.go::readPostInput` instead, which adds
+   `--file`/`--filename` and arbitrates who gets stdin.
 
 ## Conventions
 
@@ -73,6 +75,9 @@ scripts/smoke.sh              # end-to-end smoke against a live server
 - Post references in `reply`/`react`/`pin`/`edit`/`delete` go through
   `extractPostID` so permalinks work too.
 - Destructive operations require `--yes` (currently just `delete`).
+- Attachments upload to the target channel *before* `CreatePost`, then land in
+  `Post.FileIds`. See `internal/cli/attach.go`; uploads borrow a longer HTTP
+  timeout via `client.WithTimeout` since `defaultTimeout` covers the body too.
 - Empty result arrays must marshal to `[]`, never `null` — initialize as
   `rows := []rowType{}` instead of `var rows []rowType`.
 - Use `model.Status*` constants from the SDK for status values, never raw strings.

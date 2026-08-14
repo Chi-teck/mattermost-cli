@@ -18,8 +18,10 @@ func init() {
 
 func newReplyCmd() *cobra.Command {
 	var (
-		message string
-		read    bool
+		message  string
+		read     bool
+		files    []string
+		filename string
 	)
 	cmd := &cobra.Command{
 		Use:   "reply <post-id-or-permalink>",
@@ -30,19 +32,20 @@ func newReplyCmd() *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			body, err := readMessageInput(message, read, os.Stdin)
+			body, atts, err := readPostInput(message, read, files, filename, os.Stdin)
 			if err != nil {
 				return err
 			}
-			return runReply(ctx, args[0], body)
+			return runReply(ctx, args[0], body, atts)
 		},
 	}
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Reply body")
 	cmd.Flags().BoolVar(&read, "read", false, "Read reply body from stdin")
+	addAttachmentFlags(cmd, &files, &filename)
 	return cmd
 }
 
-func runReply(ctx context.Context, postRef, message string) error {
+func runReply(ctx context.Context, postRef, message string, atts []attachment) error {
 	c, err := LoadContext(ctx)
 	if err != nil {
 		return err
@@ -59,10 +62,15 @@ func runReply(ctx context.Context, postRef, message string) error {
 	if target.RootId != "" {
 		rootID = target.RootId
 	}
+	infos, err := uploadAttachments(ctx, c.Client, target.ChannelId, atts)
+	if err != nil {
+		return err
+	}
 	reply := &model.Post{
 		ChannelId: target.ChannelId,
 		Message:   message,
 		RootId:    rootID,
+		FileIds:   fileIDs(infos),
 	}
 	created, _, err := c.Client.CreatePost(ctx, reply)
 	if err != nil {
@@ -76,7 +84,7 @@ func runReply(ctx context.Context, postRef, message string) error {
 	}
 	usernames, _ := resolver.UsernamesOf(ctx, []string{created.UserId})
 	if Globals.Human {
-		fmt.Fprintf(os.Stdout, "Replied %s to thread %s\n", created.Id, rootID)
+		fmt.Fprintf(os.Stdout, "Replied %s to thread %s%s\n", created.Id, rootID, attachedSuffix(len(infos)))
 		return nil
 	}
 	return writeJSON(os.Stdout, enrichPosts([]*model.Post{created}, usernames, channelName)[0])
