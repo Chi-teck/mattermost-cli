@@ -83,6 +83,11 @@ mm reply <post-id> -m "ack"            # threaded reply
 mm dm @alice -m "ping"                 # direct message
 echo "from stdin" | mm post <ref> --read
 
+# Attachments: --file is repeatable (max 10) and works on post/reply/dm.
+mm post <ref> -m "see the trace" --file ./crash.log --file ./screenshot.png
+mm post <ref> --file ./report.pdf                 # message body is optional
+make-report | mm post <ref> --file - --filename report.txt
+
 mm react <post-id> :white_check_mark:  # add reaction
 mm unreact <post-id> :white_check_mark:
 

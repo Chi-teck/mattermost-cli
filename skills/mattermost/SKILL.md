@@ -183,6 +183,11 @@ echo "long body" | mm post <ref> --read    # body from stdin
 mm reply <post_id> -m "ack"                # threaded reply
 mm dm @alice -m "ping"                     # direct message
 
+# Attachments: --file is repeatable (max 10); -m is optional once a file is set.
+mm post <ref> -m "the trace" --file ./crash.log --file ./shot.png
+mm dm @alice --file ./report.pdf
+make-report | mm post <ref> --file - --filename report.txt   # bytes from stdin
+
 mm react   <post_id> :white_check_mark:
 mm unreact <post_id> :white_check_mark:
 
@@ -223,7 +228,7 @@ chain (e.g. take the `id` from `mm post` and feed it into `mm pin`).
 | `is_reply` / `reply_count` | Thread structure |
 | `reactions` | Emoji counts like `{":+1:": 3, ":white_check_mark:": 1}` |
 | `created_at` | ISO 8601 UTC |
-| `file_count` / `files[]` | Attachments. Each entry has `id`, `name`, `size`, `mime_type`, `extension`, and `width`/`height` for images. Pass `id` to `mm download`. |
+| `file_count` / `files[]` | Attachments. Each entry has `id`, `name`, `size`, `mime_type`, `extension`, and `width`/`height` for images. Pass `id` to `mm download`; send files with `mm post --file`. |
 
 Bot posts from webhooks have alert content extracted from Slack-format
 attachments, so you see actual alert text, not empty messages.

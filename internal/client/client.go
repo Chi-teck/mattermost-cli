@@ -22,6 +22,10 @@ import (
 // Default HTTP timeout for SDK calls.
 const defaultTimeout = 30 * time.Second
 
+// UploadTimeout bounds a single file upload. defaultTimeout covers the whole
+// request including the body, which is far too tight for a large attachment.
+const UploadTimeout = 10 * time.Minute
+
 // API is the narrow surface internal packages depend on. *model.Client4
 // satisfies it directly; tests can supply a fake.
 //
@@ -90,6 +94,21 @@ func New(rawURL, token string) (*model.Client4, error) {
 		c.SetToken(token)
 	}
 	return c, nil
+}
+
+// WithTimeout swaps c's HTTP client for one sharing the same Transport but a
+// different overall timeout, and returns a func restoring the original. Use it
+// around calls whose body can take much longer than defaultTimeout to send.
+func WithTimeout(c *model.Client4, d time.Duration) func() {
+	prev := c.HTTPClient
+	if prev == nil {
+		c.HTTPClient = &http.Client{Timeout: d}
+	} else {
+		next := *prev // shallow copy keeps the tuned Transport and its pool
+		next.Timeout = d
+		c.HTTPClient = &next
+	}
+	return func() { c.HTTPClient = prev }
 }
 
 // Login validates credentials. Returns the logged-in user on success.

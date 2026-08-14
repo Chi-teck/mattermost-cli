@@ -55,6 +55,39 @@ if [[ $WRITE -eq 1 ]]; then
   step "unreact";                  "$BIN" unreact "$POST_ID" white_check_mark
   step "mark-read";                "$BIN" mark-read "$CHANNEL"
   step "delete --yes";             "$BIN" delete "$POST_ID" --yes
+
+  step "post --file"
+  FIXTURE="$(mktemp)"
+  printf 'mm CLI smoke attachment %s\n' "$(date +%H:%M:%S)" >"$FIXTURE"
+  ATTACH_JSON=$("$BIN" post "$CHANNEL" -m "mm CLI smoke attachment" --file "$FIXTURE")
+  echo "$ATTACH_JSON"
+  ATTACH_POST_ID=$(echo "$ATTACH_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+  FILE_ID=$(echo "$ATTACH_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['file_count'] == 1, f\"file_count {d['file_count']} != 1\"
+assert d.get('files'), 'files[] missing from the created post'
+assert d['files'][0]['name'], 'files[0].name is empty'
+print(d['files'][0]['id'])")
+
+  # The real proof: what we uploaded is byte-for-byte what comes back down.
+  step "download round-trip"
+  "$BIN" download "$FILE_ID" --output - | diff - "$FIXTURE"
+  echo "attachment round-tripped unchanged"
+  "$BIN" delete "$ATTACH_POST_ID" --yes
+  rm -f "$FIXTURE"
+
+  step "post --file - (stdin)"
+  STDIN_JSON=$(printf 'piped attachment\n' |
+    "$BIN" post "$CHANNEL" -m "mm CLI smoke piped attachment" --file - --filename piped.txt)
+  echo "$STDIN_JSON"
+  STDIN_POST_ID=$(echo "$STDIN_JSON" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert d['file_count'] == 1, f\"file_count {d['file_count']} != 1\"
+assert d['files'][0]['name'] == 'piped.txt', d['files'][0]['name']
+print(d['id'])")
+  "$BIN" delete "$STDIN_POST_ID" --yes
 fi
 
 step "DONE"

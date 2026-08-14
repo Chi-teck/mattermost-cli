@@ -30,7 +30,7 @@ func newEditCmd() *cobra.Command {
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			body, err := readMessageInput(message, read, os.Stdin)
+			body, err := readMessageInput(message, read, os.Stdin, false)
 			if err != nil {
 				return err
 			}

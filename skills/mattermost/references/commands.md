@@ -283,6 +283,7 @@ All write commands return the created/updated resource as JSON.
 ```
 mm post <ref> -m "body"
 echo "body" | mm post <ref> --read
+mm post <ref> -m "body" --file ./a.log --file ./b.png
 ```
 
 ### `reply`
@@ -290,6 +291,7 @@ echo "body" | mm post <ref> --read
 ```
 mm reply <post_id> -m "body"
 echo "body" | mm reply <post_id> --read
+mm reply <post_id> -m "body" --file ./a.log
 ```
 
 ### `dm`
@@ -298,9 +300,32 @@ Send a direct message. Opens (or reuses) the DM channel.
 
 ```
 mm dm @username -m "body"
+mm dm @username --file ./report.pdf
 ```
 
 Self-DM is allowed (`mm dm @<you>`).
+
+### Attachments (`post` / `reply` / `dm`)
+
+`--file PATH` attaches a local file; repeat it for up to 10 files per post.
+The message body becomes optional once at least one `--file` is given.
+
+```
+mm post <ref> --file ./report.pdf                            # no -m needed
+generate-report | mm post <ref> --file - --filename out.txt  # bytes from stdin
+```
+
+`--file -` reads the attachment from stdin and requires `--filename` to name
+it, so it must be the only attachment. It cannot be combined with `--read`,
+which also consumes stdin.
+
+Files are uploaded to the target channel before the post is created. If any
+upload fails, no post is made; the files already uploaded stay unattached and
+the server reaps them. Paths are validated before anything is sent, so a typo
+costs no network round trip.
+
+The returned post carries `file_count` and a populated `files[]`; pass
+`files[].id` to `mm download` to fetch a file back.
 
 ### `react` / `unreact`
 

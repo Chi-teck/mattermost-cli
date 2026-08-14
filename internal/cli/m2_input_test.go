@@ -6,7 +6,7 @@ import (
 )
 
 func TestReadMessageInput_Explicit(t *testing.T) {
-	got, err := readMessageInput("hello", false, nil)
+	got, err := readMessageInput("hello", false, nil, false)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -16,7 +16,7 @@ func TestReadMessageInput_Explicit(t *testing.T) {
 }
 
 func TestReadMessageInput_Stdin(t *testing.T) {
-	got, err := readMessageInput("", true, strings.NewReader("from stdin\n"))
+	got, err := readMessageInput("", true, strings.NewReader("from stdin\n"), false)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -26,16 +26,34 @@ func TestReadMessageInput_Stdin(t *testing.T) {
 }
 
 func TestReadMessageInput_StdinEmpty(t *testing.T) {
-	_, err := readMessageInput("", true, strings.NewReader(""))
+	_, err := readMessageInput("", true, strings.NewReader(""), false)
 	if err == nil {
 		t.Fatal("expected error on empty stdin")
 	}
 }
 
 func TestReadMessageInput_None(t *testing.T) {
-	_, err := readMessageInput("", false, nil)
+	_, err := readMessageInput("", false, nil, false)
 	if err == nil {
 		t.Fatal("expected error when no message provided")
+	}
+}
+
+func TestReadMessageInput_OptionalNone(t *testing.T) {
+	got, err := readMessageInput("", false, nil, true)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("want empty body, got %q", got)
+	}
+}
+
+// An explicit --read still means the user intended text, attachments or not.
+func TestReadMessageInput_OptionalStdinEmpty(t *testing.T) {
+	_, err := readMessageInput("", true, strings.NewReader(""), true)
+	if err == nil {
+		t.Fatal("expected error on empty stdin even when the body is optional")
 	}
 }
 
