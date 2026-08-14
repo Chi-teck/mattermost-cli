@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"github.com/ayusavin/mattermost-cli/internal/wsutil"
 )
 
 func TestEventTypeIncluded(t *testing.T) {
@@ -25,5 +27,72 @@ func TestEventTypeIncludedEmptyMeansAll(t *testing.T) {
 	}
 	if !eventTypeIncluded(model.WebsocketEventTyping, parseWatchEventTypes("")) {
 		t.Fatalf("empty include set should include all event types")
+	}
+}
+
+func TestEventActorID(t *testing.T) {
+	tests := []struct {
+		name  string
+		event *model.WebSocketEvent
+		want  string
+	}{
+		{
+			name: "posted with post as json string",
+			event: model.NewWebSocketEvent(model.WebsocketEventPosted, "team1", "chan1", "", nil, "").
+				SetData(map[string]any{"post": `{"id":"p1","user_id":"author1","channel_id":"chan1","message":"hi"}`}),
+			want: "author1",
+		},
+		{
+			name: "posted with post as object",
+			event: model.NewWebSocketEvent(model.WebsocketEventPosted, "team1", "chan1", "", nil, "").
+				SetData(map[string]any{"post": map[string]any{"id": "p1", "user_id": "author2", "channel_id": "chan1"}}),
+			want: "author2",
+		},
+		{
+			name: "post_edited uses the post author",
+			event: model.NewWebSocketEvent(model.WebsocketEventPostEdited, "team1", "chan1", "", nil, "").
+				SetData(map[string]any{"post": `{"id":"p1","user_id":"author3"}`}),
+			want: "author3",
+		},
+		{
+			name: "reaction_added uses the reactor",
+			event: model.NewWebSocketEvent(model.WebsocketEventReactionAdded, "team1", "chan1", "", nil, "").
+				SetData(map[string]any{"reaction": `{"user_id":"reactor1","post_id":"p1","emoji_name":"tada"}`}),
+			want: "reactor1",
+		},
+		{
+			name:  "status_change falls back to broadcast scope",
+			event: model.NewWebSocketEvent(model.WebsocketEventStatusChange, "", "", "user9", nil, "").SetData(map[string]any{"status": "online"}),
+			want:  "user9",
+		},
+		{
+			name: "typing falls back to the data payload",
+			event: model.NewWebSocketEvent(model.WebsocketEventTyping, "team1", "chan1", "", nil, "").
+				SetData(map[string]any{"user_id": "typer1"}),
+			want: "typer1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := eventActorID(tt.event, wsutil.EventData(tt.event))
+			if got != tt.want {
+				t.Fatalf("eventActorID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The broadcast scope of a `posted` event carries no user id, so a self-filter
+// written against it would silently match nothing. This is why eventActorID
+// reaches into the payload instead.
+func TestEventActorIDPostedHasNoBroadcastUser(t *testing.T) {
+	ev := model.NewWebSocketEvent(model.WebsocketEventPosted, "team1", "chan1", "", nil, "").
+		SetData(map[string]any{"post": `{"id":"p1","user_id":"author1"}`})
+	if got := wsutil.UserID(ev); got != "" {
+		t.Fatalf("wsutil.UserID() = %q, want empty for a posted event", got)
+	}
+	if got := eventActorID(ev, wsutil.EventData(ev)); got != "author1" {
+		t.Fatalf("eventActorID() = %q, want %q", got, "author1")
 	}
 }

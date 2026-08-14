@@ -150,7 +150,16 @@ for tail-style monitoring.
 
 ```
 mm watch
+mm watch --channel <channel-id>   # only this channel (repeatable)
+mm watch --types posted           # only these event types
+mm watch --limit 5                # exit after 5 events
+mm watch --timeout 30s            # exit after 30s of no output
+mm watch --include-self           # do not drop your own events
 ```
+
+Events caused by the authenticated user are dropped by default, so a program
+that posts in reply to what it reads does not answer itself. `--include-self`
+restores the raw stream.
 
 Ctrl-C to stop.
 

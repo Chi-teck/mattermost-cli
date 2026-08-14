@@ -24,10 +24,11 @@ func init() {
 
 func newWatchCmd() *cobra.Command {
 	var (
-		channels []string
-		typesCSV string
-		limit    int
-		timeout  time.Duration
+		channels    []string
+		typesCSV    string
+		limit       int
+		timeout     time.Duration
+		includeSelf bool
 	)
 	cmd := &cobra.Command{
 		Use:   "watch",
@@ -38,13 +39,14 @@ func newWatchCmd() *cobra.Command {
 				ctx = context.Background()
 			}
 			include := parseWatchEventTypes(typesCSV)
-			return runWatch(ctx, channels, include, limit, timeout)
+			return runWatch(ctx, channels, include, limit, timeout, includeSelf)
 		},
 	}
 	cmd.Flags().StringArrayVar(&channels, "channel", nil, "Filter to a channel id (repeatable)")
 	cmd.Flags().StringVar(&typesCSV, "types", defaultWatchTypes, "Comma-separated WebSocket event types to include")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Exit after N events (0 = no limit)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Exit after a duration of output inactivity (0 = no timeout)")
+	cmd.Flags().BoolVar(&includeSelf, "include-self", false, "Also emit events caused by the authenticated user (excluded by default)")
 	return cmd
 }
 
@@ -57,7 +59,7 @@ type watchEventLine struct {
 	Data      map[string]any `json:"data"`
 }
 
-func runWatch(ctx context.Context, channels []string, include map[model.WebsocketEventType]bool, limit int, timeout time.Duration) error {
+func runWatch(ctx context.Context, channels []string, include map[model.WebsocketEventType]bool, limit int, timeout time.Duration, includeSelf bool) error {
 	lc, err := LoadContext(ctx)
 	if err != nil {
 		return err
@@ -139,11 +141,16 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 				continue
 			}
 
+			data := wsutil.EventData(ev)
+			if !includeSelf && eventActorID(ev, data) == lc.Me.Id {
+				continue
+			}
+
 			now := time.Now().UTC()
 			if Globals.Human {
-				fmt.Fprintln(out, formatWatchEventHuman(ev, now))
+				fmt.Fprintln(out, formatWatchEventHuman(ev, data, now))
 			} else {
-				if err := enc.Encode(formatWatchEventJSON(ev, now)); err != nil {
+				if err := enc.Encode(formatWatchEventJSON(ev, data, now)); err != nil {
 					return errs.Errorf(errs.CodeGeneric, "write event: %s", err.Error())
 				}
 			}
@@ -159,19 +166,32 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 	}
 }
 
-func formatWatchEventJSON(ev *model.WebSocketEvent, ts time.Time) watchEventLine {
+// eventActorID returns the id of the user who caused the event. Post and
+// reaction payloads carry the actor, while the broadcast scope does not — it is
+// empty for `posted`, so wsutil.UserID alone would match nothing.
+func eventActorID(ev *model.WebSocketEvent, data map[string]any) string {
+	switch ev.EventType() {
+	case model.WebsocketEventPosted, model.WebsocketEventPostEdited, model.WebsocketEventPostDeleted:
+		return extractPost(data).UserID
+	case model.WebsocketEventReactionAdded, model.WebsocketEventReactionRemoved:
+		return extractReaction(data).UserID
+	default:
+		return wsutil.UserID(ev)
+	}
+}
+
+func formatWatchEventJSON(ev *model.WebSocketEvent, data map[string]any, ts time.Time) watchEventLine {
 	return watchEventLine{
 		Type:      string(ev.EventType()),
 		Timestamp: ts.Format(time.RFC3339),
 		ChannelID: wsutil.ChannelID(ev),
 		TeamID:    wsutil.TeamID(ev),
 		UserID:    wsutil.UserID(ev),
-		Data:      wsutil.EventData(ev),
+		Data:      data,
 	}
 }
 
-func formatWatchEventHuman(ev *model.WebSocketEvent, ts time.Time) string {
-	data := wsutil.EventData(ev)
+func formatWatchEventHuman(ev *model.WebSocketEvent, data map[string]any, ts time.Time) string {
 	clock := ts.Local().Format("15:04:05")
 	switch ev.EventType() {
 	case model.WebsocketEventPosted:

@@ -169,7 +169,7 @@ mm pinned <ref>
 mm members <ref>
 mm user @someone
 mm download <file-id>            # save attachment to cwd; --output -, --force
-mm watch                         # follow the WebSocket event stream
+mm watch                         # follow the WebSocket event stream (own events excluded; --include-self keeps them)
 ```
 
 `<ref>` accepts a channel name (`off-topic`), `@username` for DMs, a `~name`

@@ -48,7 +48,7 @@ mm pinned <ref>                # pinned posts
 mm user @alice                 # profile + status + timezone
 mm mentions --since 7d         # posts @-mentioning you
 mm search "deployment"         # search across all your teams
-mm watch                       # follow the WebSocket event stream
+mm watch                       # follow the WebSocket event stream (your own events excluded)
 ```
 
 ## Local-first: sync daemon + `mm query`
