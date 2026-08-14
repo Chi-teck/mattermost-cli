@@ -12,12 +12,31 @@ JSON output by default for agent consumption; pass `--human` for markdown.
 # macOS / Linux via Homebrew
 brew install ayusavin/tap/mm
 
-# Or download a release binary
-# https://github.com/ayusavin/mattermost-cli/releases
-
-# Or build from source
+# Or with Go (downloads the published module)
 go install github.com/ayusavin/mattermost-cli/cmd/mm@latest
 ```
+
+Or [download a release binary](https://github.com/ayusavin/mattermost-cli/releases).
+
+### Build from source
+
+```bash
+git clone https://github.com/ayusavin/mattermost-cli
+cd mattermost-cli
+CGO_ENABLED=0 go build -o mm ./cmd/mm
+```
+
+`CGO_ENABLED=0` keeps `mm` a single static binary; the local cache uses a
+pure-Go SQLite driver so no C toolchain is needed. To stamp the version the way
+releases do:
+
+```bash
+CGO_ENABLED=0 go build -trimpath \
+  -ldflags "-s -w -X main.version=$(git describe --tags --always)" \
+  -o mm ./cmd/mm
+```
+
+Without those flags `mm --version` reports `dev`.
 
 ## Authenticate
 
@@ -29,9 +48,9 @@ mm login --url https://chat.example.com --token <PAT>
 mm whoami
 ```
 
-Environment overrides config: `MATTERMOST_URL`, `MATTERMOST_TOKEN`,
-`MATTERMOST_TEAM`. The on-disk config lives at `~/.config/mm/config.json`
-(token only, `0600` permissions).
+Environment variables override the config file: `MATTERMOST_URL`,
+`MATTERMOST_TOKEN`, `MATTERMOST_TEAM`. The on-disk config lives at
+`~/.config/mm/config.json` (token only, `0600` permissions).
 
 ## Read
 
@@ -48,8 +67,17 @@ mm pinned <ref>                # pinned posts
 mm user @alice                 # profile + status + timezone
 mm mentions --since 7d         # posts @-mentioning you
 mm search "deployment"         # search across all your teams
+mm find-channel <term>         # channels across your teams by name or purpose
+mm search-user <term>          # users by username, full name, nickname, email
+mm download <file-id>          # save an attachment (IDs come from files[].id)
 mm watch                       # follow the WebSocket event stream (your own events excluded)
 ```
+
+Channel references (`<ref>`) accept a channel name (`off-topic`), a `~name`
+form, `@username` for a DM, or a raw channel ID. Post references accept a post
+ID or a permalink. See
+[`skills/mattermost/references/commands.md`](skills/mattermost/references/commands.md)
+for every command and flag.
 
 ## Local-first: sync daemon + `mm query`
 
@@ -68,12 +96,13 @@ mm query "SELECT author, message, created_at FROM v_post
           WHERE channel_id='<id>' ORDER BY create_at DESC LIMIT 30"
 ```
 
-`mm query` is read-only (SELECT / WITH / EXPLAIN). The cache lives under
-`os.UserCacheDir()` (`~/Library/Caches/mm` on macOS, `~/.cache/mm` on Linux);
-override with `MM_CACHE_PATH`. When the daemon is running and fresh, reads such
-as `find-channel` use the cache automatically and fall back to the live API
-otherwise (`MM_NO_DAEMON=1` forces live). Writes go through the normal commands
-and are reflected in the cache immediately (read-your-writes).
+`mm query` is read-only — only `SELECT`, `WITH`, and `EXPLAIN` are accepted.
+The cache lives under `os.UserCacheDir()` (`~/Library/Caches/mm` on macOS,
+`~/.cache/mm` on Linux); override it with `MM_CACHE_PATH`. When the daemon is
+running and fresh, reads such as `find-channel` use the cache automatically,
+falling back to the live API when it is not (`MM_NO_DAEMON=1` always forces
+live). Writes still go through the normal commands and are reflected in the
+cache immediately (read-your-writes).
 
 ## Write
 
@@ -89,8 +118,8 @@ mm unreact <post-id> :white_check_mark:
 mm pin <post-id>
 mm unpin <post-id>
 
-mm edit <post-id> -m "fixed typo"      # only own posts
-mm delete <post-id> --yes              # only own posts; --yes required
+mm edit <post-id> -m "fixed typo"      # only your own posts
+mm delete <post-id> --yes              # only your own posts; --yes required
 
 mm mark-read <ref>                     # reset unread badges
 
@@ -106,7 +135,8 @@ Every post returned by `messages`/`thread`/`search`/`mentions` includes:
 - `id`, `thread_id`, `is_reply`, `reply_count` (on root posts)
 - `author` (e.g. `@alice`), `message`, `created_at` (ISO 8601 UTC)
 - `channel_id`, `channel` (display name), `team` (where relevant)
-- `file_count`, `files[]` (name + size when available)
+- `file_count`, `files[]` (each entry has `id`, `name`, `size`, `mime_type`,
+  `extension`, plus `width`/`height` for images; pass `id` to `mm download`)
 - `reactions` (map: `{":wave:": 2}`)
 
 `unread` / `channels` rows include a `ref` field — the exact string to pass
@@ -119,26 +149,34 @@ to `mm messages <ref>`. Always use `ref`, not raw IDs or display names.
 | 0    | OK |
 | 1    | Generic error |
 | 2    | Auth expired or invalid — run `mm login` |
-| 3    | Rate limited by server |
+| 3    | Rate limited by the server |
 | 4    | Timed out waiting (`mm watch --timeout`) |
 
 ## Shell completion
 
 ```bash
-mm completion bash   > /usr/local/etc/bash_completion.d/mm
+mm completion bash   > /etc/bash_completion.d/mm            # Linux
+mm completion bash   > /usr/local/etc/bash_completion.d/mm  # macOS (Homebrew)
 mm completion zsh    > "${fpath[1]}/_mm"
 mm completion fish   > ~/.config/fish/completions/mm.fish
 ```
 
 Homebrew installs completions automatically.
 
-## Smoke test
+## Develop
 
-Copy `.env.smoke.example` to `.env.smoke` and fill in URL + PAT, then:
+```bash
+go test ./... -count=1
+go vet ./...
+```
+
+Unit tests cover pure logic only; the smoke script is the only thing that
+exercises the Mattermost SDK. Copy `.env.smoke.example` to `.env.smoke` and
+fill in the URL and PAT, then:
 
 ```bash
 scripts/smoke.sh          # read-only commands
-scripts/smoke.sh --write  # also exercise post/react/pin/edit/delete
+scripts/smoke.sh --write  # also exercises post/react/pin/edit/delete/watch
 ```
 
 `.env.smoke` is gitignored.
