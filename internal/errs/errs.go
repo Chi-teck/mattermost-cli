@@ -5,15 +5,19 @@
 //   - 1 generic error
 //   - 2 auth expired / unauthenticated
 //   - 3 rate limited
+//   - 4 timed out waiting (mm-specific, no Python counterpart)
 package errs
 
 import "fmt"
 
 const (
-	CodeOK           = 0
-	CodeGeneric      = 1
-	CodeAuthExpired  = 2
-	CodeRateLimited  = 3
+	CodeOK          = 0
+	CodeGeneric     = 1
+	CodeAuthExpired = 2
+	CodeRateLimited = 3
+	// CodeTimeout means the command gave up waiting rather than failing. A
+	// supervisor can restart on it instead of treating the silence as success.
+	CodeTimeout = 4
 )
 
 // ExitError carries a process exit code along with a human-readable message.

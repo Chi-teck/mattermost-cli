@@ -120,6 +120,7 @@ to `mm messages <ref>`. Always use `ref`, not raw IDs or display names.
 | 1    | Generic error |
 | 2    | Auth expired or invalid — run `mm login` |
 | 3    | Rate limited by server |
+| 4    | Timed out waiting (`mm watch --timeout`) |
 
 ## Shell completion
 

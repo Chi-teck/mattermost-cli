@@ -239,6 +239,7 @@ attachments, so you see actual alert text, not empty messages.
 | 1    | Generic error |
 | 2    | Auth expired or invalid — run `mm login` again |
 | 3    | Rate limited by the server — back off and retry |
+| 4    | Timed out waiting — `mm watch --timeout` elapsed with no events |
 
 Always check the exit code before assuming a write succeeded.
 

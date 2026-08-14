@@ -78,18 +78,22 @@ assert ev["actor_id"] == sys.argv[2], f"actor_id {ev['actor_id']!r} != me {sys.a
 assert ev["post"]["id"] == sys.argv[3], f"post.id {ev['post']['id']!r} != {sys.argv[3]!r}"
 PY
 
-  step "watch self-filter (expects no events)"
+  step "watch self-filter (expects no events, exit 4)"
   SELF_OUT=$(mktemp)
   "$BIN" watch --channel "$CHANNEL_ID" --types posted --limit 1 --timeout 10s >"$SELF_OUT" &
   SELF_PID=$!
   sleep 3
   SELF_POST_ID=$("$BIN" post "$CHANNEL" -m "mm CLI smoke self-filter $(date +%H:%M:%S)" |
     python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
-  wait "$SELF_PID"
+  SELF_RC=0
+  wait "$SELF_PID" || SELF_RC=$?
   if [[ -s "$SELF_OUT" ]]; then
     echo "self-filter leaked our own post:"; cat "$SELF_OUT"; exit 1
   fi
-  echo "no events, as expected"
+  if [[ $SELF_RC -ne 4 ]]; then
+    echo "expected exit 4 (timed out), got $SELF_RC"; exit 1
+  fi
+  echo "no events and exit 4, as expected"
 
   step "delete watch posts"
   "$BIN" delete "$WATCH_POST_ID" --yes

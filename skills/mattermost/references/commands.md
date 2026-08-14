@@ -9,7 +9,7 @@ Global flags (any position):
 - `--debug` — verbose error output
 
 Exit codes: `0` OK · `1` generic · `2` auth expired (run `mm login`) ·
-`3` rate limited.
+`3` rate limited · `4` timed out waiting (`mm watch --timeout`).
 
 ---
 
@@ -165,8 +165,10 @@ restores the raw stream.
 A dropped connection is never fatal — `watch` reconnects indefinitely, waiting
 `--reconnect-delay` (default `3s`) between attempts. It therefore runs until
 Ctrl-C, `--limit`, or `--timeout`; bound it with one of those rather than
-relying on the connection dying. `--timeout` measures silence, so it fires
-during an outage too.
+relying on the connection dying. `--timeout` measures time since the last
+emitted event, so it fires during an outage too, and exits **`4`** rather than
+`0` — silence is not success. `--limit` exits `0`; Ctrl-C terminates on the
+signal (`130`).
 
 One JSON object per line:
 

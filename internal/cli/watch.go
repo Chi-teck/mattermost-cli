@@ -73,8 +73,9 @@ type watchEventLine struct {
 }
 
 // runWatch streams events until ctx is cancelled, --limit is reached, or
-// --timeout elapses with no output. A dropped connection is never fatal: it
-// reconnects forever, mirroring the sync daemon's WebSocket loop.
+// --timeout elapses with no output — the last of which exits errs.CodeTimeout
+// so a supervisor can tell silence from success. A dropped connection is never
+// fatal: it reconnects forever, mirroring the sync daemon's WebSocket loop.
 func runWatch(ctx context.Context, channels []string, include map[model.WebsocketEventType]bool, limit int, timeout time.Duration, includeSelf bool, reconnectDelay time.Duration) error {
 	lc, err := LoadContext(ctx)
 	if err != nil {
@@ -104,6 +105,14 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 			idle.Reset(timeout)
 		}
 	}
+	// timedOut distinguishes our own inactivity timer from the caller cancelling
+	// (Ctrl-C), which are otherwise the same cancelled streamCtx.
+	timedOut := func() error {
+		if ctx.Err() != nil || streamCtx.Err() == nil {
+			return nil
+		}
+		return errs.Errorf(errs.CodeTimeout, "no events for %s", timeout)
+	}
 
 	// consume streams from one connection. It reports done=true when watching is
 	// over (cancelled, timed out, limit reached) and false when the connection
@@ -112,7 +121,7 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 		for {
 			select {
 			case <-streamCtx.Done():
-				return true, nil
+				return true, timedOut()
 			case <-client.PingTimeoutChannel:
 				fmt.Fprintln(os.Stderr, "warning: websocket ping timed out; reconnecting")
 				return false, nil
@@ -163,7 +172,8 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 			return nil
 		}
 	}
-	return nil
+	// Reached when the timeout fires while we are between connections.
+	return timedOut()
 }
 
 // eventActorID returns the id of the user who caused the event. Post and
