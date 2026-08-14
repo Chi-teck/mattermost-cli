@@ -155,11 +155,18 @@ mm watch --types posted           # only these event types
 mm watch --limit 5                # exit after 5 events
 mm watch --timeout 30s            # exit after 30s of no output
 mm watch --include-self           # do not drop your own events
+mm watch --reconnect-delay 10s    # wait longer between reconnect attempts
 ```
 
 Events caused by the authenticated user are dropped by default, so a program
 that posts in reply to what it reads does not answer itself. `--include-self`
 restores the raw stream.
+
+A dropped connection is never fatal — `watch` reconnects indefinitely, waiting
+`--reconnect-delay` (default `3s`) between attempts. It therefore runs until
+Ctrl-C, `--limit`, or `--timeout`; bound it with one of those rather than
+relying on the connection dying. `--timeout` measures silence, so it fires
+during an outage too.
 
 Ctrl-C to stop.
 

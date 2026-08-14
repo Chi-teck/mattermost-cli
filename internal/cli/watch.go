@@ -16,7 +16,12 @@ import (
 	"github.com/ayusavin/mattermost-cli/internal/wsutil"
 )
 
-const defaultWatchTypes = "posted,reaction_added,reaction_removed,channel_viewed,status_change,typing"
+const (
+	defaultWatchTypes = "posted,reaction_added,reaction_removed,channel_viewed,status_change,typing"
+	// defaultWatchReconnectDelay matches syncd.reconnectDelay so the two
+	// long-lived WebSocket consumers behave the same on an outage.
+	defaultWatchReconnectDelay = 3 * time.Second
+)
 
 func init() {
 	Register(newWatchCmd)
@@ -24,11 +29,12 @@ func init() {
 
 func newWatchCmd() *cobra.Command {
 	var (
-		channels    []string
-		typesCSV    string
-		limit       int
-		timeout     time.Duration
-		includeSelf bool
+		channels       []string
+		typesCSV       string
+		limit          int
+		timeout        time.Duration
+		includeSelf    bool
+		reconnectDelay time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "watch",
@@ -39,7 +45,7 @@ func newWatchCmd() *cobra.Command {
 				ctx = context.Background()
 			}
 			include := parseWatchEventTypes(typesCSV)
-			return runWatch(ctx, channels, include, limit, timeout, includeSelf)
+			return runWatch(ctx, channels, include, limit, timeout, includeSelf, max(reconnectDelay, 0))
 		},
 	}
 	cmd.Flags().StringArrayVar(&channels, "channel", nil, "Filter to a channel id (repeatable)")
@@ -47,6 +53,7 @@ func newWatchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 0, "Exit after N events (0 = no limit)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Exit after a duration of output inactivity (0 = no timeout)")
 	cmd.Flags().BoolVar(&includeSelf, "include-self", false, "Also emit events caused by the authenticated user (excluded by default)")
+	cmd.Flags().DurationVar(&reconnectDelay, "reconnect-delay", defaultWatchReconnectDelay, "Wait this long before re-establishing a dropped connection")
 	return cmd
 }
 
@@ -59,17 +66,14 @@ type watchEventLine struct {
 	Data      map[string]any `json:"data"`
 }
 
-func runWatch(ctx context.Context, channels []string, include map[model.WebsocketEventType]bool, limit int, timeout time.Duration, includeSelf bool) error {
+// runWatch streams events until ctx is cancelled, --limit is reached, or
+// --timeout elapses with no output. A dropped connection is never fatal: it
+// reconnects forever, mirroring the sync daemon's WebSocket loop.
+func runWatch(ctx context.Context, channels []string, include map[model.WebsocketEventType]bool, limit int, timeout time.Duration, includeSelf bool, reconnectDelay time.Duration) error {
 	lc, err := LoadContext(ctx)
 	if err != nil {
 		return err
 	}
-
-	client, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
-	if err != nil {
-		return errs.Errorf(errs.CodeGeneric, "connect websocket: %s", err.Error())
-	}
-	defer client.Close()
 
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
@@ -78,8 +82,6 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 
 	channelSet := stringSet(channels)
 	received := 0
-	pingTimeouts := 0
-	disconnectReconnects := 0
 	var timer *time.Timer
 	var inactivity <-chan time.Time
 	if timeout > 0 {
@@ -100,68 +102,93 @@ func runWatch(ctx context.Context, channels []string, include map[model.Websocke
 		timer.Reset(timeout)
 	}
 
-	reconnect := func(reason string) error {
-		fmt.Fprintf(os.Stderr, "warning: websocket %s; reconnecting once\n", reason)
-		client.Close()
-		next, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
-		if err != nil {
-			return errs.Errorf(errs.CodeGeneric, "reconnect websocket after %s: %s", reason, err.Error())
+	// wait blocks for d, reporting whether watching should continue. The
+	// inactivity timeout keeps running while we are disconnected — an outage is
+	// silence too.
+	wait := func(d time.Duration) bool {
+		t := time.NewTimer(d)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-inactivity:
+			return false
+		case <-t.C:
+			return true
 		}
-		client = next
-		resetTimer()
-		return nil
+	}
+
+	// consume streams from one connection. It reports done=true when watching is
+	// over (cancelled, timed out, limit reached) and false when the connection
+	// merely dropped and should be re-established.
+	consume := func(client *model.WebSocketClient) (bool, error) {
+		for {
+			select {
+			case <-ctx.Done():
+				return true, nil
+			case <-inactivity:
+				return true, nil
+			case <-client.PingTimeoutChannel:
+				fmt.Fprintln(os.Stderr, "warning: websocket ping timed out; reconnecting")
+				return false, nil
+			case ev, ok := <-client.EventChannel:
+				if !ok {
+					fmt.Fprintln(os.Stderr, "warning: websocket disconnected; reconnecting")
+					return false, nil
+				}
+				if ev == nil || !eventTypeIncluded(ev.EventType(), include) || !eventChannelIncluded(ev, channelSet) {
+					continue
+				}
+
+				data := wsutil.EventData(ev)
+				if !includeSelf && eventActorID(ev, data) == lc.Me.Id {
+					continue
+				}
+
+				now := time.Now().UTC()
+				if Globals.Human {
+					fmt.Fprintln(out, formatWatchEventHuman(ev, data, now))
+				} else {
+					if err := enc.Encode(formatWatchEventJSON(ev, data, now)); err != nil {
+						return true, errs.Errorf(errs.CodeGeneric, "write event: %s", err.Error())
+					}
+				}
+				if err := out.Flush(); err != nil {
+					return true, errs.Errorf(errs.CodeGeneric, "flush event: %s", err.Error())
+				}
+				resetTimer()
+				received++
+				if limit > 0 && received >= limit {
+					return true, nil
+				}
+			}
+		}
 	}
 
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return nil
-		case <-inactivity:
-			return nil
-		case <-client.PingTimeoutChannel:
-			pingTimeouts++
-			if pingTimeouts > 1 {
-				return errs.Errorf(errs.CodeGeneric, "websocket ping timed out twice")
-			}
-			if err := reconnect("ping timed out"); err != nil {
-				return err
-			}
-		case ev, ok := <-client.EventChannel:
-			if !ok {
-				disconnectReconnects++
-				if disconnectReconnects > 1 {
-					return errs.Errorf(errs.CodeGeneric, "websocket disconnected after reconnect")
-				}
-				if err := reconnect("disconnected"); err != nil {
-					return err
-				}
-				continue
-			}
-			if ev == nil || !eventTypeIncluded(ev.EventType(), include) || !eventChannelIncluded(ev, channelSet) {
-				continue
-			}
-
-			data := wsutil.EventData(ev)
-			if !includeSelf && eventActorID(ev, data) == lc.Me.Id {
-				continue
-			}
-
-			now := time.Now().UTC()
-			if Globals.Human {
-				fmt.Fprintln(out, formatWatchEventHuman(ev, data, now))
-			} else {
-				if err := enc.Encode(formatWatchEventJSON(ev, data, now)); err != nil {
-					return errs.Errorf(errs.CodeGeneric, "write event: %s", err.Error())
-				}
-			}
-			if err := out.Flush(); err != nil {
-				return errs.Errorf(errs.CodeGeneric, "flush event: %s", err.Error())
-			}
-			resetTimer()
-			received++
-			if limit > 0 && received >= limit {
+		}
+		client, err := wsutil.Connect(lc.Cfg.URL, lc.Cfg.Token)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: connect websocket: %s; retrying in %s\n", err.Error(), reconnectDelay)
+			if !wait(reconnectDelay) {
 				return nil
 			}
+			continue
+		}
+		resetTimer()
+
+		done, err := consume(client)
+		client.Close()
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		if !wait(reconnectDelay) {
+			return nil
 		}
 	}
 }

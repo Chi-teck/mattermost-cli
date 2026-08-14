@@ -175,6 +175,9 @@ mm watch                         # follow the WebSocket event stream (own events
 `<ref>` accepts a channel name (`off-topic`), `@username` for DMs, a `~name`
 form, or a raw channel ID (use this for group DMs from `overview` output).
 
+`watch` reconnects indefinitely, so it never ends on its own — bound it with
+`--limit N` or `--timeout <dur>` unless you intend to run it until Ctrl-C.
+
 ## Acting (write commands)
 
 ```bash
